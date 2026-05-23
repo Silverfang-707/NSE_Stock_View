@@ -38,6 +38,9 @@
     let candles =
         $state<any[]>([]);
 
+    let levels =
+        $state<any[]>([]);
+
     let loading =
         $state(false);
 
@@ -59,91 +62,92 @@
 
     async function loadSymbols() {
 
-    try {
+        try {
 
-        const response =
-            await api.get(
-                `/symbols`
+            const response =
+                await api.get(
+                    `/symbols`
+                );
+
+            const newSymbols =
+                response.data;
+
+            symbols = newSymbols;
+
+            if (
+
+                !selectedSymbol &&
+
+                newSymbols.length > 0
+
+            ) {
+
+                selectedSymbol =
+                    newSymbols[0];
+
+                await loadSeries();
+            }
+
+        } catch (error) {
+
+            console.error(
+                "Failed to load symbols",
+                error
             );
-
-        const newSymbols =
-            response.data;
-
-        symbols = newSymbols;
-
-        // auto select first symbol
-
-        if (
-            !selectedSymbol &&
-            newSymbols.length > 0
-        ) {
-
-            selectedSymbol =
-                newSymbols[0];
-
-            await loadSeries();
         }
-
-    } catch (error) {
-
-        console.error(
-            "Failed to load symbols",
-            error
-        );
     }
-}
 
     // =====================================
     // LOAD SERIES
     // =====================================
+
     async function loadSeries() {
 
-    if (!selectedSymbol) {
+        if (!selectedSymbol) {
 
-        series = [];
+            series = [];
 
-        return;
-    }
-
-    try {
-
-        const response =
-            await api.get(
-                `/series/${selectedSymbol}`
-            );
-
-        const newSeries =
-            response.data;
-
-        series = newSeries;
-
-        // preserve valid selection
-
-        if (
-
-            !newSeries.includes(
-                selectedSeries
-            )
-
-        ) {
-
-            if (
-                newSeries.length > 0
-            ) {
-
-                selectedSeries =
-                    newSeries[0];
-            }
+            return;
         }
 
-    } catch (error) {
+        try {
 
-        console.error(
-            "Failed to load series",
-            error
-        );
+            const response =
+                await api.get(
+                    `/series/${selectedSymbol}`
+                );
+
+            const newSeries =
+                response.data;
+
+            series = newSeries;
+
+            if (
+
+                !newSeries.includes(
+                    selectedSeries
+                )
+
+            ) {
+
+                if (
+                    newSeries.length > 0
+                ) {
+
+                    selectedSeries =
+                        newSeries[0];
+                }
+            }
+
+        } catch (error) {
+
+            console.error(
+                "Failed to load series",
+                error
+            );
+        }
     }
-}
+
     // =====================================
     // LOAD ANALYSIS
     // =====================================
@@ -151,12 +155,11 @@
     async function loadAnalysis() {
 
         if (!selectedSymbol) {
+
             return;
         }
 
         try {
-
-            loading = true;
 
             const response =
                 await api.get(
@@ -172,10 +175,6 @@
                 "Failed to load analysis",
                 error
             );
-
-        } finally {
-
-            loading = false;
         }
     }
 
@@ -185,135 +184,158 @@
 
     async function loadCandles() {
 
-    if (!selectedSymbol) {
+        if (!selectedSymbol) {
 
-        return;
-    }
+            return;
+        }
 
-    try {
+        try {
 
-        const response =
-            await api.get(
-                `/candles/${selectedSymbol}`
+            const response =
+                await api.get(
+                    `/candles/${selectedSymbol}`
+                );
+
+            candles =
+
+                response.data
+
+                    .map(
+                        (candle: any) => ({
+
+                            time:
+
+                                (
+                                    candle.trade_date ??
+
+                                    candle.tradeDate
+                                )
+
+                                ?.split("T")[0],
+
+                            open:
+
+                                candle.open_price ??
+
+                                candle.openPrice,
+
+                            high:
+
+                                candle.high_price ??
+
+                                candle.highPrice,
+
+                            low:
+
+                                candle.low_price ??
+
+                                candle.lowPrice,
+
+                            close:
+
+                                candle.close_price ??
+
+                                candle.closePrice
+                        })
+                    )
+
+                    .filter(
+                        (c: any) =>
+
+                            c.time &&
+
+                            c.open != null &&
+
+                            c.high != null &&
+
+                            c.low != null &&
+
+                            c.close != null
+                    )
+
+                    .slice(-30);
+
+        } catch (error) {
+
+            console.error(
+                "Failed to load candles",
+                error
             );
-
-        console.log(
-            "Raw candle response:",
-            response.data[0]
-        );
-
-        candles =
-
-            response.data
-
-                .map(
-                    (candle: any) => ({
-
-                        // Supports BOTH:
-                        // snake_case
-                        // camelCase
-
-                        time:
-
-                            (
-                                candle.trade_date ??
-
-                                candle.tradeDate
-                            )
-
-                            ?.split("T")[0],
-
-                        open:
-
-                            candle.open_price ??
-
-                            candle.openPrice,
-
-                        high:
-
-                            candle.high_price ??
-
-                            candle.highPrice,
-
-                        low:
-
-                            candle.low_price ??
-
-                            candle.lowPrice,
-
-                        close:
-
-                            candle.close_price ??
-
-                            candle.closePrice
-                    })
-                )
-
-                // Remove broken candles
-
-                .filter(
-                    (c: any) =>
-
-                        c.time &&
-
-                        c.open != null &&
-
-                        c.high != null &&
-
-                        c.low != null &&
-
-                        c.close != null
-                )
-
-                // Keep latest 30 VALID candles
-
-                .slice(-30);
-
-        console.log(
-            "Mapped candles:",
-            candles
-        );
-
-        console.log(
-            "Candle count:",
-            candles.length
-        );
-
-    } catch (error) {
-
-        console.error(
-            "Failed to load candles",
-            error
-        );
+        }
     }
-}
 
     // =====================================
-    // SEARCH / ANALYZE
+    // LOAD LEVELS
+    // =====================================
+
+    async function loadLevels() {
+
+        if (!selectedSymbol) {
+
+            return;
+        }
+
+        try {
+
+            const response =
+                await api.get(
+                    `/levels/${selectedSymbol}`
+                );
+
+            levels =
+                response.data;
+
+        } catch (error) {
+
+            console.error(
+                "Failed to load levels",
+                error
+            );
+        }
+    }
+
+    // =====================================
+    // SEARCH
     // =====================================
 
     async function search() {
 
-        await loadAnalysis();
+        loading = true;
 
-        await loadCandles();
+        try {
+
+            await Promise.all([
+
+                loadAnalysis(),
+
+                loadCandles(),
+
+                loadLevels()
+
+            ]);
+
+        } finally {
+
+            loading = false;
+        }
     }
 
     // =====================================
-    // SERIES CHANGE
+    // CHANGE HANDLERS
     // =====================================
 
     async function changeSymbol() {
 
-    await loadSeries();
+        await loadSeries();
 
-    await search();
-}
+        await search();
+    }
 
     async function changeSeries() {
 
-    await search();
-}
+        await search();
+    }
+
     // =====================================
     // INGEST DATA
     // =====================================
@@ -329,7 +351,6 @@
             ingestMessage =
                 "Starting ingestion...";
 
-            // fake smooth progress
             const interval =
                 setInterval(() => {
 
@@ -388,21 +409,17 @@
 
     onMount(async () => {
 
-    await loadSymbols();
+        await loadSymbols();
 
-    if (selectedSymbol) {
+        if (selectedSymbol) {
 
-        await search();
-    }
-});
+            await search();
+        }
+    });
 
 </script>
 
 <div class="page">
-
-    <!-- ===================================== -->
-    <!-- HEADER -->
-    <!-- ===================================== -->
 
     <div class="header">
 
@@ -420,28 +437,20 @@
 
     </div>
 
-    <!-- ===================================== -->
-    <!-- FILTER BAR -->
-    <!-- ===================================== -->
-
     <FilterBar
 
-    {symbols}
+        {symbols}
 
-    {series}
+        {series}
 
-    bind:selectedSymbol
+        bind:selectedSymbol
 
-    bind:selectedSeries
+        bind:selectedSeries
 
-    onSymbolChange={changeSymbol}
+        onSymbolChange={changeSymbol}
 
-    onSeriesChange={changeSeries}
-/>
-
-    <!-- ===================================== -->
-    <!-- ADMIN BAR -->
-    <!-- ===================================== -->
+        onSeriesChange={changeSeries}
+    />
 
     <div class="admin-bar">
 
@@ -519,10 +528,6 @@
 
     </div>
 
-    <!-- ===================================== -->
-    <!-- PROGRESS -->
-    <!-- ===================================== -->
-
     {#if ingesting || ingestProgress > 0}
 
         <div class="progress-wrapper">
@@ -539,10 +544,6 @@
 
     {/if}
 
-    <!-- ===================================== -->
-    <!-- LOADING -->
-    <!-- ===================================== -->
-
     {#if loading}
 
         <div class="loading">
@@ -550,10 +551,6 @@
         </div>
 
     {/if}
-
-    <!-- ===================================== -->
-    <!-- CONTENT -->
-    <!-- ===================================== -->
 
     {#if analysis}
 
@@ -589,6 +586,108 @@
             />
 
         </div>
+
+        {#if levels.length > 0}
+
+            {@const latest = levels[0]}
+
+            <div class="levels-panel">
+
+                <h2>
+                    Calculated Levels
+                </h2>
+
+                <div class="levels-grid">
+
+                    <div class="level-card">
+
+                        <span>
+                            JGD
+                        </span>
+
+                        <strong>
+                            {latest.jgd?.toFixed(2)}
+                        </strong>
+
+                    </div>
+
+                    <div class="level-card">
+
+                        <span>
+                            JWD
+                        </span>
+
+                        <strong>
+                            {latest.jwd?.toFixed(2)}
+                        </strong>
+
+                    </div>
+
+                    <div class="level-card">
+
+                        <span>
+                            BDP
+                        </span>
+
+                        <strong>
+                            {latest.bdp?.toFixed(2)}
+                        </strong>
+
+                    </div>
+
+                    <div class="level-card">
+
+                        <span>
+                            WDP
+                        </span>
+
+                        <strong>
+                            {latest.wdp?.toFixed(2)}
+                        </strong>
+
+                    </div>
+
+                    <div class="level-card">
+
+                        <span>
+                            Range
+                        </span>
+
+                        <strong>
+                            {latest.range_value?.toFixed(2)}
+                        </strong>
+
+                    </div>
+
+                    <div class="level-card">
+
+                        <span>
+                            Buffer
+                        </span>
+
+                        <strong>
+                            {latest.buffer_value?.toFixed(2)}
+                        </strong>
+
+                    </div>
+
+                    <div class="level-card pattern">
+
+                        <span>
+                            Pattern
+                        </span>
+
+                        <strong>
+                            {latest.pattern}
+                        </strong>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        {/if}
 
         <div class="analysis-grid">
 
@@ -920,7 +1019,7 @@ select {
     display: grid;
 
     grid-template-columns:
-        1.2fr 1fr;
+        1fr 1.3fr;
 
     gap: 20px;
 
@@ -938,6 +1037,104 @@ select {
         );
 
     gap: 20px;
+}
+
+.levels-panel {
+
+    margin-bottom: 24px;
+
+    background:
+        linear-gradient(
+            to bottom,
+            #0f172a,
+            #111827
+        );
+
+    border:
+        1px solid #1e293b;
+
+    border-radius: 14px;
+
+    padding: 20px;
+}
+
+.levels-panel h2 {
+
+    margin: 0;
+
+    margin-bottom: 18px;
+
+    font-size: 22px;
+
+    font-weight: 800;
+}
+
+.levels-grid {
+
+    display: grid;
+
+    grid-template-columns:
+        repeat(
+            auto-fit,
+            minmax(180px, 1fr)
+        );
+
+    gap: 16px;
+}
+
+.level-card {
+
+    background: #020617;
+
+    border:
+        1px solid #334155;
+
+    border-radius: 12px;
+
+    padding: 18px;
+
+    display: flex;
+
+    flex-direction: column;
+
+    gap: 10px;
+
+    transition: 0.15s;
+}
+
+.level-card:hover {
+
+    border-color: #2563eb;
+
+    transform:
+        translateY(-2px);
+}
+
+.level-card span {
+
+    color: #94a3b8;
+
+    font-size: 12px;
+
+    font-weight: 700;
+
+    letter-spacing: 1px;
+
+    text-transform: uppercase;
+}
+
+.level-card strong {
+
+    color: white;
+
+    font-size: 24px;
+
+    font-weight: 800;
+}
+
+.pattern strong {
+
+    color: #22c55e;
 }
 
 </style>

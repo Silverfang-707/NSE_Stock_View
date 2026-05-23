@@ -30,6 +30,8 @@ use handlers::{
 
     series::get_series,
 
+    levels::get_levels,
+
     auth::{
         create_admin,
         login,
@@ -89,6 +91,11 @@ async fn main() {
                 "/analysis/{symbol}",
                 get(get_analysis)
             )
+
+            .route(
+    "/levels/{symbol}",
+            get(get_levels)
+        )
 
             .nest(
 
