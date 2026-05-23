@@ -23,11 +23,14 @@
     let symbols =
         $state<string[]>([]);
 
+    let series =
+        $state<string[]>([]);
+
     let selectedSymbol =
         $state("");
 
     let selectedSeries =
-        $state("EQ");
+        $state("");
 
     let analysis =
         $state<any>(null);
@@ -56,45 +59,91 @@
 
     async function loadSymbols() {
 
-        try {
+    try {
 
-            const response =
-                await api.get(
-                    `/symbols/${selectedSeries}`
-                );
-
-            const newSymbols =
-                response.data;
-
-            symbols = newSymbols;
-
-            // preserve symbol if valid
-            if (
-
-                !newSymbols.includes(
-                    selectedSymbol
-                )
-
-            ) {
-
-                if (
-                    newSymbols.length > 0
-                ) {
-
-                    selectedSymbol =
-                        newSymbols[0];
-                }
-            }
-
-        } catch (error) {
-
-            console.error(
-                "Failed to load symbols",
-                error
+        const response =
+            await api.get(
+                `/symbols`
             );
+
+        const newSymbols =
+            response.data;
+
+        symbols = newSymbols;
+
+        // auto select first symbol
+
+        if (
+            !selectedSymbol &&
+            newSymbols.length > 0
+        ) {
+
+            selectedSymbol =
+                newSymbols[0];
+
+            await loadSeries();
         }
+
+    } catch (error) {
+
+        console.error(
+            "Failed to load symbols",
+            error
+        );
+    }
+}
+
+    // =====================================
+    // LOAD SERIES
+    // =====================================
+    async function loadSeries() {
+
+    if (!selectedSymbol) {
+
+        series = [];
+
+        return;
     }
 
+    try {
+
+        const response =
+            await api.get(
+                `/series/${selectedSymbol}`
+            );
+
+        const newSeries =
+            response.data;
+
+        series = newSeries;
+
+        // preserve valid selection
+
+        if (
+
+            !newSeries.includes(
+                selectedSeries
+            )
+
+        ) {
+
+            if (
+                newSeries.length > 0
+            ) {
+
+                selectedSeries =
+                    newSeries[0];
+            }
+        }
+
+    } catch (error) {
+
+        console.error(
+            "Failed to load series",
+            error
+        );
+    }
+}
     // =====================================
     // LOAD ANALYSIS
     // =====================================
@@ -174,11 +223,17 @@
     // SERIES CHANGE
     // =====================================
 
+    async function changeSymbol() {
+
+    await loadSeries();
+
+    await search();
+}
+
     async function changeSeries() {
 
-        await loadSymbols();
-    }
-
+    await search();
+}
     // =====================================
     // INGEST DATA
     // =====================================
@@ -253,13 +308,13 @@
 
     onMount(async () => {
 
-        await loadSymbols();
+    await loadSymbols();
 
-        await loadAnalysis();
+    if (selectedSymbol) {
 
-        await loadCandles();
-
-    });
+        await search();
+    }
+});
 
 </script>
 
@@ -291,16 +346,20 @@
 
     <FilterBar
 
-        {symbols}
+    {symbols}
 
-        bind:selectedSymbol
+    {series}
 
-        bind:selectedSeries
+    bind:selectedSymbol
 
-        onSearch={search}
+    bind:selectedSeries
 
-        onSeriesChange={changeSeries}
-    />
+    onSearch={search}
+
+    onSymbolChange={changeSymbol}
+
+    onSeriesChange={changeSeries}
+/>
 
     <!-- ===================================== -->
     <!-- ADMIN BAR -->

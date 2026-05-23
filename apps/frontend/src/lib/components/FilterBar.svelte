@@ -4,11 +4,16 @@
 
         symbols = [],
 
+        series = [],
+
         selectedSymbol = $bindable(""),
 
-        selectedSeries = $bindable("EQ"),
+        selectedSeries = $bindable(""),
 
         onSearch = (() => {}) as () => void,
+
+        onSymbolChange =
+            (() => {}) as () => void,
 
         onSeriesChange =
             (() => {}) as () => void,
@@ -19,45 +24,6 @@
 
 <div class="filter-bar">
 
-    <!-- SERIES -->
-
-    <div class="field">
-
-        <label>
-            Series
-        </label>
-
-        <select
-
-            bind:value={selectedSeries}
-
-            onchange={() => onSeriesChange()}
-        >
-
-            <option value="EQ">
-                EQ
-            </option>
-
-            <option value="BE">
-                BE
-            </option>
-
-            <option value="GB">
-                GB
-            </option>
-
-            <option value="BZ">
-                BZ
-            </option>
-
-            <option value="SM">
-                SM
-            </option>
-
-        </select>
-
-    </div>
-
     <!-- SYMBOL -->
 
     <div class="field">
@@ -67,7 +33,11 @@
         </label>
 
         <select
+
             bind:value={selectedSymbol}
+
+            onchange={() => onSymbolChange()}
+
         >
 
             {#each symbols as symbol}
@@ -82,12 +52,42 @@
 
     </div>
 
+    <!-- SERIES -->
+
+    <div class="field">
+
+        <label>
+            Series
+        </label>
+
+        <select
+
+            bind:value={selectedSeries}
+
+            onchange={() => onSeriesChange()}
+
+        >
+
+            {#each series as s}
+
+                <option value={s}>
+                    {s}
+                </option>
+
+            {/each}
+
+        </select>
+
+    </div>
+
     <!-- SEARCH -->
 
     <button
         onclick={() => onSearch()}
     >
+
         Analyze
+
     </button>
 
 </div>
