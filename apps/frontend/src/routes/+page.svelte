@@ -185,28 +185,108 @@
 
     async function loadCandles() {
 
-        if (!selectedSymbol) {
-            return;
-        }
+    if (!selectedSymbol) {
 
-        try {
-
-            const response =
-                await api.get(
-                    `/candles/${selectedSymbol}`
-                );
-
-            candles =
-                response.data.slice(-30);
-
-        } catch (error) {
-
-            console.error(
-                "Failed to load candles",
-                error
-            );
-        }
+        return;
     }
+
+    try {
+
+        const response =
+            await api.get(
+                `/candles/${selectedSymbol}`
+            );
+
+        console.log(
+            "Raw candle response:",
+            response.data[0]
+        );
+
+        candles =
+
+            response.data
+
+                .map(
+                    (candle: any) => ({
+
+                        // Supports BOTH:
+                        // snake_case
+                        // camelCase
+
+                        time:
+
+                            (
+                                candle.trade_date ??
+
+                                candle.tradeDate
+                            )
+
+                            ?.split("T")[0],
+
+                        open:
+
+                            candle.open_price ??
+
+                            candle.openPrice,
+
+                        high:
+
+                            candle.high_price ??
+
+                            candle.highPrice,
+
+                        low:
+
+                            candle.low_price ??
+
+                            candle.lowPrice,
+
+                        close:
+
+                            candle.close_price ??
+
+                            candle.closePrice
+                    })
+                )
+
+                // Remove broken candles
+
+                .filter(
+                    (c: any) =>
+
+                        c.time &&
+
+                        c.open != null &&
+
+                        c.high != null &&
+
+                        c.low != null &&
+
+                        c.close != null
+                )
+
+                // Keep latest 30 VALID candles
+
+                .slice(-30);
+
+        console.log(
+            "Mapped candles:",
+            candles
+        );
+
+        console.log(
+            "Candle count:",
+            candles.length
+        );
+
+    } catch (error) {
+
+        console.error(
+            "Failed to load candles",
+            error
+        );
+    }
+}
 
     // =====================================
     // SEARCH / ANALYZE
@@ -353,8 +433,6 @@
     bind:selectedSymbol
 
     bind:selectedSeries
-
-    onSearch={search}
 
     onSymbolChange={changeSymbol}
 

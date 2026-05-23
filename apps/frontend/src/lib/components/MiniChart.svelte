@@ -10,25 +10,43 @@
 
     } = $props();
 
-    let chartElement: HTMLDivElement;
+    let chartElement:
+        HTMLDivElement;
 
-    onMount(() => {
+    let chart: any;
 
-        const chart =
-            echarts.init(chartElement);
+    // =====================================
+    // UPDATE CHART
+    // =====================================
+
+    function updateChart() {
+
+        if (
+            !chart ||
+            candles.length === 0
+        ) {
+
+            return;
+        }
 
         const option = {
 
-            backgroundColor: "transparent",
+            backgroundColor:
+                "transparent",
 
             tooltip: {
+
                 trigger: "axis"
             },
 
             grid: {
+
                 left: 10,
+
                 right: 10,
+
                 top: 20,
+
                 bottom: 20
             },
 
@@ -39,16 +57,19 @@
                 data:
                     candles.map(
                         (c: any) =>
-                            c.trade_date
+                            c.time
                     ),
 
                 axisLine: {
+
                     lineStyle: {
+
                         color: "#475569"
                     }
                 },
 
                 axisLabel: {
+
                     color: "#94a3b8"
                 }
             },
@@ -58,19 +79,24 @@
                 scale: true,
 
                 axisLine: {
+
                     lineStyle: {
+
                         color: "#475569"
                     }
                 },
 
                 splitLine: {
+
                     lineStyle: {
+
                         color:
                             "rgba(255,255,255,0.04)"
                     }
                 },
 
                 axisLabel: {
+
                     color: "#94a3b8"
                 }
             },
@@ -78,19 +104,20 @@
             series: [
 
                 {
+
                     type: "candlestick",
 
                     data:
                         candles.map(
                             (c: any) => [
 
-                                c.open_price,
+                                c.open,
 
-                                c.close_price,
+                                c.close,
 
-                                c.low_price,
+                                c.low,
 
-                                c.high_price
+                                c.high
                             ]
                         ),
 
@@ -100,20 +127,58 @@
 
                         color0: "#ef4444",
 
-                        borderColor: "#22c55e",
+                        borderColor:
+                            "#22c55e",
 
-                        borderColor0: "#ef4444"
+                        borderColor0:
+                            "#ef4444"
                     }
                 }
             ]
         };
 
         chart.setOption(option);
+    }
+
+    // =====================================
+    // INIT CHART
+    // =====================================
+
+    onMount(() => {
+
+        chart =
+            echarts.init(
+                chartElement
+            );
+
+        updateChart();
+
+        const resizeHandler =
+            () => chart.resize();
 
         window.addEventListener(
             "resize",
-            () => chart.resize()
+            resizeHandler
         );
+
+        return () => {
+
+            window.removeEventListener(
+                "resize",
+                resizeHandler
+            );
+
+            chart.dispose();
+        };
+    });
+
+    // =====================================
+    // REACTIVE UPDATE
+    // =====================================
+
+    $effect(() => {
+
+        updateChart();
     });
 
 </script>

@@ -82,14 +82,6 @@
 
     <!-- SEARCH -->
 
-    <button
-        onclick={() => onSearch()}
-    >
-
-        Analyze
-
-    </button>
-
 </div>
 
 <style>
