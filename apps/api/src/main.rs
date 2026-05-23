@@ -26,6 +26,8 @@ use handlers::{
 
     symbols::get_symbols,
 
+    analysis::get_analysis,
+
     auth::{
         create_admin,
         login,
@@ -69,6 +71,11 @@ async fn main() {
             .route(
                 "/candles/{symbol}",
                 get(get_candles)
+            )
+
+            .route(
+                "/analysis/{symbol}",
+                get(get_analysis)
             )
 
             .nest(

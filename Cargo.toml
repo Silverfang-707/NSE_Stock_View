@@ -8,5 +8,10 @@ members = [
     "crates/market_core",
     "crates/db",
     "crates/indicators",
+    "crates/patterns",
+    "apps/api",
+    "apps/ingester",
+    "crates/db",
+    "crates/market_core",
     "crates/patterns"
 ]
