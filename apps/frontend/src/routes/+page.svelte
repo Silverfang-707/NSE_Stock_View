@@ -16,6 +16,10 @@
     import MiniChart
         from "$lib/components/MiniChart.svelte";
 
+    // =====================================
+    // STATE
+    // =====================================
+
     let symbols =
         $state<string[]>([]);
 
@@ -34,9 +38,21 @@
     let loading =
         $state(false);
 
-    // =========================
+    let ingesting =
+        $state(false);
+
+    let ingestProgress =
+        $state(0);
+
+    let yearsToIngest =
+        $state(1);
+
+    let ingestMessage =
+        $state("");
+
+    // =====================================
     // LOAD SYMBOLS
-    // =========================
+    // =====================================
 
     async function loadSymbols() {
 
@@ -47,16 +63,27 @@
                     `/symbols/${selectedSeries}`
                 );
 
-            symbols =
+            const newSymbols =
                 response.data;
 
-            // pick first symbol automatically
+            symbols = newSymbols;
+
+            // preserve symbol if valid
             if (
-                symbols.length > 0
+
+                !newSymbols.includes(
+                    selectedSymbol
+                )
+
             ) {
 
-                selectedSymbol =
-                    symbols[0];
+                if (
+                    newSymbols.length > 0
+                ) {
+
+                    selectedSymbol =
+                        newSymbols[0];
+                }
             }
 
         } catch (error) {
@@ -68,9 +95,9 @@
         }
     }
 
-    // =========================
+    // =====================================
     // LOAD ANALYSIS
-    // =========================
+    // =====================================
 
     async function loadAnalysis() {
 
@@ -103,9 +130,9 @@
         }
     }
 
-    // =========================
+    // =====================================
     // LOAD CANDLES
-    // =========================
+    // =====================================
 
     async function loadCandles() {
 
@@ -132,9 +159,9 @@
         }
     }
 
-    // =========================
-    // SEARCH ACTION
-    // =========================
+    // =====================================
+    // SEARCH / ANALYZE
+    // =====================================
 
     async function search() {
 
@@ -143,26 +170,94 @@
         await loadCandles();
     }
 
-    // =========================
+    // =====================================
     // SERIES CHANGE
-    // =========================
+    // =====================================
 
-    async function refreshSeries() {
+    async function changeSeries() {
+
+        await loadSymbols();
+    }
+
+    // =====================================
+    // INGEST DATA
+    // =====================================
+
+    async function ingestData() {
+
+        try {
+
+            ingesting = true;
+
+            ingestProgress = 0;
+
+            ingestMessage =
+                "Starting ingestion...";
+
+            // fake smooth progress
+            const interval =
+                setInterval(() => {
+
+                    if (
+                        ingestProgress < 90
+                    ) {
+
+                        ingestProgress += 5;
+                    }
+
+                }, 300);
+
+            const currentYear =
+                new Date().getFullYear();
+
+            const fromYear =
+                currentYear -
+                yearsToIngest;
+
+            const response =
+                await api.get(
+
+                    `/admin/backfill?from=${fromYear}-01-01&to=${currentYear}-12-31`
+
+                );
+
+            clearInterval(interval);
+
+            ingestProgress = 100;
+
+            ingestMessage =
+                `Imported ${response.data.rows_inserted} rows`;
+
+            setTimeout(() => {
+
+                ingestProgress = 0;
+
+            }, 2000);
+
+        } catch (error) {
+
+            console.error(error);
+
+            ingestMessage =
+                "Ingestion failed";
+
+        } finally {
+
+            ingesting = false;
+        }
+    }
+
+    // =====================================
+    // INITIAL LOAD
+    // =====================================
+
+    onMount(async () => {
 
         await loadSymbols();
 
         await loadAnalysis();
 
         await loadCandles();
-    }
-
-    // =========================
-    // INITIAL LOAD
-    // =========================
-
-    onMount(async () => {
-
-        await refreshSeries();
 
     });
 
@@ -170,7 +265,9 @@
 
 <div class="page">
 
+    <!-- ===================================== -->
     <!-- HEADER -->
+    <!-- ===================================== -->
 
     <div class="header">
 
@@ -188,7 +285,9 @@
 
     </div>
 
+    <!-- ===================================== -->
     <!-- FILTER BAR -->
+    <!-- ===================================== -->
 
     <FilterBar
 
@@ -199,22 +298,113 @@
         bind:selectedSeries
 
         onSearch={search}
+
+        onSeriesChange={changeSeries}
     />
 
-    <!-- REFRESH -->
+    <!-- ===================================== -->
+    <!-- ADMIN BAR -->
+    <!-- ===================================== -->
 
-    <div class="toolbar">
+    <div class="admin-bar">
 
-        <button
-            class="refresh-btn"
-            onclick={() => refreshSeries()}
-        >
-            Refresh Series
-        </button>
+        <div class="admin-left">
+
+            <div class="input-group">
+
+                <label for="yearsToIngest">
+                    Years To Ingest
+                </label>
+
+                <select
+                    id="yearsToIngest"
+                    bind:value={yearsToIngest}
+                >
+
+                    <option value={1}>
+                        1 Year
+                    </option>
+
+                    <option value={2}>
+                        2 Years
+                    </option>
+
+                    <option value={3}>
+                        3 Years
+                    </option>
+
+                    <option value={5}>
+                        5 Years
+                    </option>
+
+                    <option value={10}>
+                        10 Years
+                    </option>
+
+                </select>
+
+            </div>
+
+            <button
+
+                class="ingest-btn"
+
+                disabled={ingesting}
+
+                onclick={() => ingestData()}
+            >
+
+                {#if ingesting}
+
+                    Ingesting...
+
+                {:else}
+
+                    Ingest Market Data
+
+                {/if}
+
+            </button>
+
+        </div>
+
+        <div class="admin-right">
+
+            {#if ingestMessage}
+
+                <div class="message">
+                    {ingestMessage}
+                </div>
+
+            {/if}
+
+        </div>
 
     </div>
 
+    <!-- ===================================== -->
+    <!-- PROGRESS -->
+    <!-- ===================================== -->
+
+    {#if ingesting || ingestProgress > 0}
+
+        <div class="progress-wrapper">
+
+            <div
+                class="progress-bar"
+                style="
+                    width:
+                    {ingestProgress}%;
+                "
+            ></div>
+
+        </div>
+
+    {/if}
+
+    <!-- ===================================== -->
     <!-- LOADING -->
+    <!-- ===================================== -->
 
     {#if loading}
 
@@ -224,44 +414,44 @@
 
     {/if}
 
+    <!-- ===================================== -->
     <!-- CONTENT -->
+    <!-- ===================================== -->
 
     {#if analysis}
 
-        <!-- SUMMARY -->
+        <div class="top-grid">
 
-        <SummaryTable
+            <SummaryTable
 
-            summary={{
+                summary={{
 
-                Daily:
-                    analysis.daily,
+                    Daily:
+                        analysis.daily,
 
-                Weekly:
-                    analysis.weekly,
+                    Weekly:
+                        analysis.weekly,
 
-                Monthly:
-                    analysis.monthly,
+                    Monthly:
+                        analysis.monthly,
 
-                Quarterly:
-                    analysis.quarterly,
+                    Quarterly:
+                        analysis.quarterly,
 
-                HalfYear:
-                    analysis.half_yearly,
+                    HalfYear:
+                        analysis.half_yearly,
 
-                Yearly:
-                    analysis.yearly
+                    Yearly:
+                        analysis.yearly
 
-            }}
-        />
+                }}
+            />
 
-        <!-- CHART -->
+            <MiniChart
+                {candles}
+            />
 
-        <MiniChart
-            {candles}
-        />
-
-        <!-- ANALYSIS GRID -->
+        </div>
 
         <div class="analysis-grid">
 
@@ -414,12 +604,6 @@
 
 .header {
 
-    display: flex;
-
-    justify-content: space-between;
-
-    align-items: center;
-
     margin-bottom: 24px;
 }
 
@@ -439,20 +623,84 @@ p {
     color: #94a3b8;
 }
 
-.toolbar {
+.admin-bar {
 
-    margin-bottom: 20px;
+    display: flex;
+
+    justify-content: space-between;
+
+    align-items: center;
+
+    margin-bottom: 18px;
+
+    background:
+        linear-gradient(
+            to bottom,
+            #0f172a,
+            #111827
+        );
+
+    border:
+        1px solid #1e293b;
+
+    border-radius: 14px;
+
+    padding: 18px;
 }
 
-.refresh-btn {
+.admin-left {
 
-    background: #1e293b;
+    display: flex;
+
+    gap: 18px;
+
+    align-items: flex-end;
+}
+
+.input-group {
+
+    display: flex;
+
+    flex-direction: column;
+
+    gap: 8px;
+}
+
+label {
+
+    font-size: 12px;
+
+    color: #94a3b8;
+
+    font-weight: 700;
+
+    letter-spacing: 1px;
+}
+
+select {
+
+    background: #020617;
 
     border: 1px solid #334155;
 
     color: white;
 
-    padding: 10px 18px;
+    padding: 12px;
+
+    border-radius: 10px;
+
+    min-width: 180px;
+}
+
+.ingest-btn {
+
+    background: #2563eb;
+
+    border: none;
+
+    color: white;
+
+    padding: 12px 22px;
 
     border-radius: 10px;
 
@@ -463,9 +711,56 @@ p {
     transition: 0.15s;
 }
 
-.refresh-btn:hover {
+.ingest-btn:hover {
 
-    background: #334155;
+    background: #1d4ed8;
+}
+
+.ingest-btn:disabled {
+
+    opacity: 0.6;
+
+    cursor: not-allowed;
+}
+
+.progress-wrapper {
+
+    width: 100%;
+
+    height: 10px;
+
+    background: #111827;
+
+    border-radius: 999px;
+
+    overflow: hidden;
+
+    margin-bottom: 24px;
+
+    border:
+        1px solid #1e293b;
+}
+
+.progress-bar {
+
+    height: 100%;
+
+    background:
+        linear-gradient(
+            to right,
+            #2563eb,
+            #22c55e
+        );
+
+    transition:
+        width 0.3s ease;
+}
+
+.message {
+
+    color: #22c55e;
+
+    font-weight: 700;
 }
 
 .loading {
@@ -481,6 +776,18 @@ p {
     border-radius: 12px;
 
     margin-bottom: 20px;
+}
+
+.top-grid {
+
+    display: grid;
+
+    grid-template-columns:
+        1.2fr 1fr;
+
+    gap: 20px;
+
+    margin-bottom: 24px;
 }
 
 .analysis-grid {

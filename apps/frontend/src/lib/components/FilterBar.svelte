@@ -10,11 +10,53 @@
 
         onSearch = (() => {}) as () => void,
 
+        onSeriesChange =
+            (() => {}) as () => void,
+
     } = $props();
 
 </script>
 
 <div class="filter-bar">
+
+    <!-- SERIES -->
+
+    <div class="field">
+
+        <label>
+            Series
+        </label>
+
+        <select
+
+            bind:value={selectedSeries}
+
+            onchange={() => onSeriesChange()}
+        >
+
+            <option value="EQ">
+                EQ
+            </option>
+
+            <option value="BE">
+                BE
+            </option>
+
+            <option value="GB">
+                GB
+            </option>
+
+            <option value="BZ">
+                BZ
+            </option>
+
+            <option value="SM">
+                SM
+            </option>
+
+        </select>
+
+    </div>
 
     <!-- SYMBOL -->
 
@@ -40,44 +82,12 @@
 
     </div>
 
-    <!-- SERIES -->
-
-    <div class="field">
-
-        <label>
-            Series
-        </label>
-
-        <select
-            bind:value={selectedSeries}
-        >
-
-            <option value="EQ">
-                EQ
-            </option>
-
-            <option value="BE">
-                BE
-            </option>
-
-            <option value="GB">
-                GB
-            </option>
-
-            <option value="SM">
-                SM
-            </option>
-
-        </select>
-
-    </div>
-
     <!-- SEARCH -->
 
     <button
         onclick={() => onSearch()}
     >
-        Search
+        Analyze
     </button>
 
 </div>

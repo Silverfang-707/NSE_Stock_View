@@ -1,5 +1,8 @@
 use axum::{
-    extract::{Path, State},
+    extract::{
+        Path,
+        State,
+    },
     Json,
 };
 
@@ -14,32 +17,61 @@ pub async fn get_candles(
     State(pool): State<
         sqlx::Pool<sqlx::Postgres>
     >,
-) -> Json<Vec<CandleResponse>> {
+)
+-> Json<Vec<CandleResponse>>
+{
+
+    println!(
+        "📈 Fetching candles for {}",
+        symbol
+    );
 
     let rows =
         sqlx::query(
             r#"
             SELECT
+
                 trade_date,
+
                 series,
+
                 open_price,
+
                 high_price,
+
                 low_price,
+
                 close_price,
+
                 volume
+
             FROM daily_prices
+
             WHERE symbol = $1
-            ORDER BY trade_date
+
+            AND close_price IS NOT NULL
+
+            ORDER BY trade_date ASC
             "#
         )
-        .bind(symbol)
+
+        .bind(&symbol)
+
         .fetch_all(&pool)
+
         .await
+
         .unwrap();
+
+    println!(
+        "✅ Candle rows found: {}",
+        rows.len()
+    );
 
     let candles =
         rows
             .into_iter()
+
             .map(|row| {
 
                 CandleResponse {
@@ -66,6 +98,7 @@ pub async fn get_candles(
                         row.get("volume"),
                 }
             })
+
             .collect();
 
     Json(candles)

@@ -1,5 +1,8 @@
 use axum::{
-    extract::{Path, State},
+    extract::{
+        Path,
+        State,
+    },
     Json,
 };
 
@@ -10,6 +13,10 @@ use patterns::{
     timeframe::Timeframe,
 };
 
+// =====================================
+// FETCH TIMEFRAME DATA
+// =====================================
+
 async fn fetch_timeframe_data(
 
     pool: &sqlx::Pool<sqlx::Postgres>,
@@ -17,41 +24,48 @@ async fn fetch_timeframe_data(
     symbol: &str,
 
     timeframe: Timeframe,
+
 )
 -> (f64, f64, f64)
 {
 
     let query = format!(
+        r#"
+        SELECT
 
-    r#"
-    SELECT
+            MAX(high_price) AS high,
 
-        MAX(high_price) AS high,
+            MIN(low_price) AS low,
 
-        MIN(low_price) AS low,
+            (
 
-        (
-            ARRAY_AGG(
-                close_price
-                ORDER BY trade_date DESC
-            )
-        )[1] AS close
+                ARRAY_AGG(
+                    close_price
 
-    FROM daily_prices
+                    ORDER BY
+                        trade_date DESC
+                )
 
-    WHERE symbol = $1
-
-    AND trade_date >= (
-
-        SELECT MAX(trade_date)
+            )[1] AS close
 
         FROM daily_prices
 
-    ) - INTERVAL '{}'
-    "#,
+        WHERE symbol = $1
 
-    timeframe.interval()
-);
+        AND trade_date >= (
+
+            SELECT
+                MAX(trade_date)
+
+            FROM daily_prices
+
+            WHERE symbol = $1
+
+        ) - INTERVAL '{}'
+        "#,
+
+        timeframe.interval()
+    );
 
     let row =
         sqlx::query(&query)
@@ -75,10 +89,16 @@ async fn fetch_timeframe_data(
 
     (
         high.unwrap_or(0.0),
+
         low.unwrap_or(0.0),
+
         close.unwrap_or(0.0),
     )
 }
+
+// =====================================
+// ANALYSIS ENDPOINT
+// =====================================
 
 pub async fn get_analysis(
 
@@ -91,7 +111,15 @@ pub async fn get_analysis(
 -> Json<serde_json::Value>
 {
 
-    // Daily
+    println!(
+        "📊 Requested analysis for {}",
+        symbol
+    );
+
+    // =====================================
+    // DAILY
+    // =====================================
+
     let (
         d_high,
         d_low,
@@ -103,7 +131,10 @@ pub async fn get_analysis(
     )
     .await;
 
-    // Weekly
+    // =====================================
+    // WEEKLY
+    // =====================================
+
     let (
         w_high,
         w_low,
@@ -115,7 +146,10 @@ pub async fn get_analysis(
     )
     .await;
 
-    // Monthly
+    // =====================================
+    // MONTHLY
+    // =====================================
+
     let (
         m_high,
         m_low,
@@ -127,7 +161,10 @@ pub async fn get_analysis(
     )
     .await;
 
-    // Quarterly
+    // =====================================
+    // QUARTERLY
+    // =====================================
+
     let (
         q_high,
         q_low,
@@ -139,7 +176,10 @@ pub async fn get_analysis(
     )
     .await;
 
-    // Half Yearly
+    // =====================================
+    // HALF YEARLY
+    // =====================================
+
     let (
         h_high,
         h_low,
@@ -151,7 +191,10 @@ pub async fn get_analysis(
     )
     .await;
 
-    // Yearly
+    // =====================================
+    // YEARLY
+    // =====================================
+
     let (
         y_high,
         y_low,
@@ -162,6 +205,10 @@ pub async fn get_analysis(
         Timeframe::Yearly
     )
     .await;
+
+    // =====================================
+    // GENERATE ANALYSIS
+    // =====================================
 
     let daily =
         generate_daily_plan(
@@ -205,14 +252,21 @@ pub async fn get_analysis(
 
     let yearly =
         generate_daily_plan(
-            symbol,
+            symbol.clone(),
             y_high,
             y_low,
             y_close,
         );
 
+    println!(
+        "✅ Analysis generated for {}",
+        symbol
+    );
+
     Json(
         serde_json::json!({
+
+            "symbol": symbol,
 
             "daily": daily,
 

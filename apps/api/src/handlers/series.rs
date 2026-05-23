@@ -1,11 +1,16 @@
 use axum::{
-    extract::State,
+    extract::{
+        Path,
+        State,
+    },
     Json,
 };
 
 use sqlx::Row;
 
-pub async fn get_symbols(
+pub async fn get_series(
+
+    Path(symbol): Path<String>,
 
     State(pool): State<
         sqlx::Pool<sqlx::Postgres>
@@ -15,21 +20,30 @@ pub async fn get_symbols(
 {
 
     println!(
-        "📂 Loading symbols..."
+        "📂 Requested symbol: {}",
+        symbol
     );
 
     let rows =
         sqlx::query(
             r#"
-            SELECT DISTINCT symbol
+            SELECT DISTINCT series
 
             FROM instruments
 
-            WHERE symbol IS NOT NULL
+            WHERE TRIM(
+                UPPER(symbol)
+            ) = TRIM(
+                UPPER($1)
+            )
 
-            ORDER BY symbol
+            AND series IS NOT NULL
+
+            ORDER BY series
             "#
         )
+
+        .bind(&symbol)
 
         .fetch_all(&pool)
 
@@ -38,22 +52,22 @@ pub async fn get_symbols(
         .unwrap();
 
     println!(
-        "✅ Symbols found: {}",
+        "✅ Series found: {}",
         rows.len()
     );
 
-    let symbols =
+    let series =
         rows
             .into_iter()
             .map(|row| {
 
                 row.get::<String, _>(
-                    "symbol"
+                    "series"
                 )
 
             })
 
             .collect();
 
-    Json(symbols)
+    Json(series)
 }

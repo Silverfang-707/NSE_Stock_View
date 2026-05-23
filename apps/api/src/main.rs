@@ -28,6 +28,8 @@ use handlers::{
 
     analysis::get_analysis,
 
+    series::get_series,
+
     auth::{
         create_admin,
         login,
@@ -54,8 +56,13 @@ async fn main() {
         Router::new()
 
             .route(
-                "/symbols/{series}",
+                "/symbols",
                 get(get_symbols)
+            )
+
+            .route(
+                "/series/{symbol}",
+                get(get_series)
             )
 
             .route(
@@ -71,6 +78,11 @@ async fn main() {
             .route(
                 "/candles/{symbol}",
                 get(get_candles)
+            )
+
+            .route(
+                "/series",
+                get(get_series)
             )
 
             .route(

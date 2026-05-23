@@ -16,3 +16,4 @@ zip = "8.6.0"
 
 market_core = { path = "../../crates/market_core" }
 db = { path = "../../crates/db" }
+clap = { version = "4", features = ["derive"] }

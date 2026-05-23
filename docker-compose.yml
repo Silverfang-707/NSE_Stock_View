@@ -1,21 +1,32 @@
 version: "3.9"
 
 services:
+
   postgres:
+
     image: timescale/timescaledb:latest-pg16
 
     container_name: nse-timescaledb
 
     environment:
+
       POSTGRES_USER: postgres
+
       POSTGRES_PASSWORD: Silverfang@707
+
       POSTGRES_DB: nse_market
 
     ports:
       - "5432:5432"
 
     volumes:
+
+      # actual database storage
       - postgres_data:/var/lib/postgresql/data
 
+      # migration files
+      - ./crates/db/migrations:/docker-entrypoint-initdb.d
+
 volumes:
+
   postgres_data:

@@ -13,5 +13,5 @@ members = [
     "apps/ingester",
     "crates/db",
     "crates/market_core",
-    "crates/patterns"
-]
+    "crates/patterns", 
+    "apps/calculator"]

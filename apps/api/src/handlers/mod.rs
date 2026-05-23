@@ -4,3 +4,4 @@ pub mod backfill;
 pub mod candles;
 pub mod symbols;
 pub mod analysis;
+pub mod series;
