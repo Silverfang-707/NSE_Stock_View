@@ -1,4 +1,10 @@
 -- =====================================
+-- DROP OLD TABLE
+-- =====================================
+
+DROP TABLE IF EXISTS market_levels CASCADE;
+
+-- =====================================
 -- MULTI-TIMEFRAME MARKET LEVELS
 -- =====================================
 
@@ -11,6 +17,10 @@ CREATE TABLE market_levels (
     timeframe TEXT NOT NULL,
 
     trade_date DATE NOT NULL,
+
+    period_start DATE NOT NULL,
+
+    period_end DATE NOT NULL,
 
     open_price DOUBLE PRECISION,
 
@@ -68,6 +78,15 @@ ON market_levels(series);
 CREATE INDEX idx_market_levels_timeframe
 ON market_levels(timeframe);
 
+CREATE INDEX idx_market_levels_trade_date
+ON market_levels(trade_date DESC);
+
+CREATE INDEX idx_market_levels_period_start
+ON market_levels(period_start DESC);
+
+CREATE INDEX idx_market_levels_period_end
+ON market_levels(period_end DESC);
+
 CREATE INDEX idx_market_levels_symbol_tf_date
 
 ON market_levels(
@@ -77,6 +96,17 @@ ON market_levels(
     timeframe,
 
     trade_date DESC
+);
+
+CREATE INDEX idx_market_levels_symbol_series_tf
+
+ON market_levels(
+
+    symbol,
+
+    series,
+
+    timeframe
 );
 
 -- =====================================
@@ -91,3 +121,36 @@ SELECT create_hypertable(
 
     if_not_exists => TRUE
 );
+
+-- =====================================
+-- UPDATED_AT TRIGGER
+-- =====================================
+
+CREATE OR REPLACE FUNCTION
+update_updated_at_column()
+
+RETURNS TRIGGER AS $$
+
+BEGIN
+
+    NEW.updated_at = NOW();
+
+    RETURN NEW;
+END;
+
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS
+set_market_levels_updated_at
+ON market_levels;
+
+CREATE TRIGGER
+set_market_levels_updated_at
+
+BEFORE UPDATE
+ON market_levels
+
+FOR EACH ROW
+
+EXECUTE FUNCTION
+update_updated_at_column();
