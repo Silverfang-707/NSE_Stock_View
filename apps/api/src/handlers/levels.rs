@@ -3,33 +3,14 @@ use axum::{
         Path,
         State,
     },
+
     Json,
 };
 
 use sqlx::Row;
 
-use serde::Serialize;
-
-#[derive(Serialize)]
-
-pub struct LevelResponse {
-
-    trade_date: chrono::NaiveDate,
-
-    jgd: Option<f64>,
-
-    jwd: Option<f64>,
-
-    bdp: Option<f64>,
-
-    wdp: Option<f64>,
-
-    range_value: Option<f64>,
-
-    buffer_value: Option<f64>,
-
-    pattern: Option<String>,
-}
+use crate::models::market_levels::
+    MarketLevelResponse;
 
 pub async fn get_levels(
 
@@ -39,39 +20,23 @@ pub async fn get_levels(
         sqlx::Pool<sqlx::Postgres>
     >,
 )
--> Json<Vec<LevelResponse>>
+-> Json<Vec<MarketLevelResponse>>
 {
-
-    println!(
-        "📊 Fetching levels for {}",
-        symbol
-    );
 
     let rows =
         sqlx::query(
             r#"
-            SELECT
+            SELECT *
 
-                trade_date,
-
-                jgd,
-                jwd,
-
-                bdp,
-                wdp,
-
-                range_value,
-                buffer_value,
-
-                pattern
-
-            FROM daily_levels
+            FROM market_levels
 
             WHERE symbol = $1
 
-            ORDER BY trade_date DESC
+            ORDER BY
 
-            LIMIT 30
+                timeframe,
+
+                trade_date DESC
             "#
         )
 
@@ -89,10 +54,35 @@ pub async fn get_levels(
 
             .map(|row| {
 
-                LevelResponse {
+                MarketLevelResponse {
+
+                    timeframe:
+                        row.get("timeframe"),
 
                     trade_date:
-                        row.get("trade_date"),
+                        row.get::<
+                            chrono::NaiveDate,
+                            _
+                        >("trade_date")
+                        .to_string(),
+
+                    open_price:
+                        row.get("open_price"),
+
+                    high_price:
+                        row.get("high_price"),
+
+                    low_price:
+                        row.get("low_price"),
+
+                    close_price:
+                        row.get("close_price"),
+
+                    range_value:
+                        row.get("range_value"),
+
+                    buffer_value:
+                        row.get("buffer_value"),
 
                     jgd:
                         row.get("jgd"),
@@ -105,12 +95,6 @@ pub async fn get_levels(
 
                     wdp:
                         row.get("wdp"),
-
-                    range_value:
-                        row.get("range_value"),
-
-                    buffer_value:
-                        row.get("buffer_value"),
 
                     pattern:
                         row.get("pattern"),

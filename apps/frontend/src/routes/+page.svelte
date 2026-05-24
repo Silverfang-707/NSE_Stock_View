@@ -1,5 +1,10 @@
 <script lang="ts">
 
+    import type {
+
+        MarketLevel
+
+    } from "$lib/types/market-level";
     import { onMount } from "svelte";
 
     import api from "$lib/api";
@@ -43,7 +48,7 @@
         $state<any[]>([]);
 
     let levels =
-        $state<any[]>([]);
+        $state<MarketLevel[]>([]);
 
     let loading =
         $state(false);
@@ -60,6 +65,29 @@
     let ingestMessage =
         $state("");
 
+    let groupedLevels =
+
+        $derived.by(() => {
+
+            const grouped:
+                Record<string, MarketLevel> = {};
+
+            for (const level of levels) {
+
+                if (
+                    !grouped[
+                        level.timeframe
+                    ]
+                ) {
+
+                    grouped[
+                        level.timeframe
+                    ] = level;
+                }
+            }
+
+            return grouped;
+        });
     // =====================================
     // LOAD SYMBOLS
     // =====================================
@@ -282,17 +310,26 @@
         try {
 
             const response =
+
                 await api.get(
+
                     `/levels/${selectedSymbol}`
                 );
 
             levels =
                 response.data;
 
+            console.log(
+                "📊 Levels:",
+                levels
+            );
+
         } catch (error) {
 
             console.error(
+
                 "Failed to load levels",
+
                 error
             );
         }
@@ -663,107 +700,124 @@
 
         </div>
 
-        {#if levels.length > 0}
+        {#if Object.keys(groupedLevels).length > 0}
 
-            {@const latest = levels[0]}
+    <div class="levels-panel">
 
-            <div class="levels-panel">
+        <h2>
+            Calculated Levels
+        </h2>
 
-                <h2>
-                    Calculated Levels
-                </h2>
+        <div class="levels-grid">
 
-                <div class="levels-grid">
-
-                    <div class="level-card">
-
-                        <span>
-                            JGD
-                        </span>
-
-                        <strong>
-                            {latest.jgd?.toFixed(2)}
-                        </strong>
-
-                    </div>
+            {#each Object.entries(groupedLevels) as [timeframe, level]}
 
                     <div class="level-card">
 
-                        <span>
-                            JWD
-                        </span>
+                        <div class="level-top">
 
-                        <strong>
-                            {latest.jwd?.toFixed(2)}
-                        </strong>
+                            <h3>
+                                {timeframe}
+                            </h3>
+
+                            <span>
+                                {level.trade_date}
+                            </span>
+
+                        </div>
+
+                        <div class="metrics">
+
+                            <div>
+
+                                <span>
+                                    JGD
+                                </span>
+
+                                <strong>
+                                    {level.jgd?.toFixed(2)}
+                                </strong>
+
+                            </div>
+
+                            <div>
+
+                                <span class="metric-label">
+                                    JWD
+                                </span>
+
+                                <strong>
+                                    {level.jwd?.toFixed(2)}
+                                </strong>
+
+                            </div>
+
+                            <div>
+
+                                <span class="metric-label">
+                                    BDP
+                                </span>
+
+                                <strong>
+                                    {level.bdp?.toFixed(2)}
+                                </strong>
+
+                            </div>
+
+                            <div>
+
+                                <span class="metric-label">
+                                    WDP
+                                </span>
+
+                                <strong>
+                                    {level.wdp?.toFixed(2)}
+                                </strong>
+
+                            </div>
+
+                            <div>
+
+                                <span class="metric-label">
+                                    Range
+                                </span>
+
+                                <strong>
+                                    {level.range_value?.toFixed(2)}
+                                </strong>
+
+                            </div>
+
+                            <div>
+
+                                <span class="metric-label">
+                                    Buffer
+                                </span>
+
+                                <strong>
+                                    {level.buffer_value?.toFixed(2)}
+                                </strong>
+
+                            </div>
+
+                        </div>
+
+                        <div class="pattern-tag">
+
+                            Pattern:
+                            {level.pattern || "INITIAL"}
+
+                        </div>
 
                     </div>
 
-                    <div class="level-card">
-
-                        <span>
-                            BDP
-                        </span>
-
-                        <strong>
-                            {latest.bdp?.toFixed(2)}
-                        </strong>
-
-                    </div>
-
-                    <div class="level-card">
-
-                        <span>
-                            WDP
-                        </span>
-
-                        <strong>
-                            {latest.wdp?.toFixed(2)}
-                        </strong>
-
-                    </div>
-
-                    <div class="level-card">
-
-                        <span>
-                            Range
-                        </span>
-
-                        <strong>
-                            {latest.range_value?.toFixed(2)}
-                        </strong>
-
-                    </div>
-
-                    <div class="level-card">
-
-                        <span>
-                            Buffer
-                        </span>
-
-                        <strong>
-                            {latest.buffer_value?.toFixed(2)}
-                        </strong>
-
-                    </div>
-
-                    <div class="level-card pattern">
-
-                        <span>
-                            Pattern
-                        </span>
-
-                        <strong>
-                            {latest.pattern}
-                        </strong>
-
-                    </div>
-
-                </div>
+                {/each}
 
             </div>
 
-        {/if}
+        </div>
+
+    {/if}
 
         <div class="analysis-grid">
 
@@ -1266,5 +1320,83 @@ select {
 .logout-btn:hover {
 
     background: #b91c1c;
+}
+
+.level-top {
+
+    display: flex;
+
+    justify-content: space-between;
+
+    align-items: center;
+
+    margin-bottom: 18px;
+}
+
+.level-top h3 {
+
+    margin: 0;
+
+    color: white;
+
+    text-transform: capitalize;
+
+    font-size: 18px;
+}
+
+.level-top span {
+
+    color: #94a3b8;
+
+    font-size: 12px;
+}
+
+.metrics {
+
+    display: grid;
+
+    grid-template-columns:
+        repeat(2, 1fr);
+
+    gap: 14px;
+}
+
+.metrics div {
+
+    display: flex;
+
+    flex-direction: column;
+
+    gap: 6px;
+}
+
+.metrics label {
+
+    color: #94a3b8;
+
+    font-size: 11px;
+
+    letter-spacing: 1px;
+}
+
+.metrics strong {
+
+    color: white;
+
+    font-size: 18px;
+}
+
+.pattern-tag {
+
+    margin-top: 18px;
+
+    padding-top: 12px;
+
+    border-top:
+        1px solid #1e293b;
+
+    color: #22c55e;
+
+    font-weight: 700;
 }
 </style>
