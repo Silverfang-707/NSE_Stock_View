@@ -1,292 +1,274 @@
 use anyhow::Result;
-
 use dotenvy::dotenv;
-
 use std::env;
 
-use chrono::NaiveDate;
-
 use db::create_pool;
-
 use sqlx::Row;
 
 mod calculations;
 mod models;
 mod services;
 
-use calculations::range::calculate_range;
-
-use calculations::buffer::calculate_buffer;
-
-use calculations::jgd::calculate_jgd;
-
-use calculations::jwd::calculate_jwd;
-
-use calculations::bdp::calculate_bdp;
-
-use calculations::wdp::calculate_wdp;
-
-use calculations::patterns::detect_pattern;
-
-use models::level::Level;
-
-use services::{
-    fetch::fetch_daily_prices,
-    insert::insert_level,
+use calculations::{
+    range::calculate_range,
+    buffer::calculate_buffer,
+    jgd::calculate_jgd,
+    jwd::calculate_jwd,
+    patterns::{detect_pattern, update_bdp_wdp},
 };
 
-// =====================================
-// GET LATEST CALCULATED DATE
-// =====================================
+use models::{
+    level::Level,
+    timeframe::Timeframe,
+};
 
-async fn get_latest_level_date(
+use services::fetch::{
+    fetch_symbols,
+    fetch_latest_level_date,
+    fetch_last_level,
+    fetch_timeframe_ohlc,
+};
 
-    pool: &sqlx::Pool<sqlx::Postgres>
-
-)
--> Option<NaiveDate>
-{
-
-    let row =
-        sqlx::query(
-            r#"
-            SELECT
-
-                MAX(trade_date)
-                AS latest_date
-
-            FROM daily_levels
-            "#
-        )
-
-        .fetch_one(pool)
-
-        .await
-
-        .ok()?;
-
-    row.try_get("latest_date")
-        .ok()
-}
+use services::insert::insert_level;
 
 // =====================================
 // MAIN
 // =====================================
 
 #[tokio::main]
-
-async fn main() -> Result<()>
-{
+async fn main() -> Result<()> {
 
     dotenv().ok();
-
-    // =====================================
-    // DATABASE
-    // =====================================
 
     let database_url =
         env::var("DATABASE_URL")?;
 
     let pool =
-        create_pool(&database_url)
-            .await;
+        create_pool(&database_url).await;
+
+    println!("✅ Calculator DB Connected");
+
+    // =====================================
+    // FETCH SYMBOLS
+    // =====================================
+
+    println!("\n📥 Fetching symbols...");
+
+    let symbols =
+        fetch_symbols(&pool).await;
 
     println!(
-        "✅ Calculator DB Connected"
+        "✅ Found {} symbols",
+        symbols.len()
     );
 
     // =====================================
-    // LATEST CALCULATED DATE
+    // TIMEFRAMES
     // =====================================
 
-    let latest_level_date =
-        get_latest_level_date(&pool)
-            .await;
+    let timeframes = vec![
+        Timeframe::Daily,
+        Timeframe::Weekly,
+        Timeframe::Monthly,
+        Timeframe::Quarterly,
+        Timeframe::Yearly,
+    ];
 
-    match latest_level_date {
-
-        Some(date) => {
-
-            println!(
-                "📅 Latest calculated date: {}",
-                date
-            );
-        }
-
-        None => {
-
-            println!(
-                "⚠️ No existing calculated levels"
-            );
-        }
-    }
+    let mut total_processed = 0;
 
     // =====================================
-    // FETCH RAW DAILY PRICES
+    // PROCESS EACH SYMBOL
     // =====================================
 
-    println!(
-        "\n📥 Fetching daily prices..."
-    );
+    for row in &symbols {
 
-    let rows =
-        fetch_daily_prices(&pool)
-            .await;
+        let symbol: String = row.get("symbol");
+        let series: String = row.get("series");
 
-    println!(
-        "✅ Fetched {} rows",
-        rows.len()
-    );
-
-    // =====================================
-    // PROCESS ROWS
-    // =====================================
-
-    let mut processed = 0;
-
-    for row in rows {
-
-        let trade_date: NaiveDate =
-            row.get("trade_date");
+        println!(
+            "\n📊 Processing {} [{}]",
+            symbol,
+            series
+        );
 
         // =================================
-        // INCREMENTAL CALCULATION
+        // PROCESS EACH TIMEFRAME
         // =================================
 
-        if let Some(latest_date) =
-            latest_level_date
-        {
+        for timeframe in &timeframes {
 
-            if trade_date <= latest_date {
+            let tf_str    = timeframe.as_str();
+            let trunc_str = timeframe.trunc_str();
 
+            // =============================
+            // INCREMENTAL: latest calculated
+            // date per symbol/series/timeframe
+            // =============================
+
+            let latest_date =
+                fetch_latest_level_date(
+                    &pool,
+                    &symbol,
+                    &series,
+                    tf_str,
+                )
+                .await;
+
+            // =============================
+            // CARRY FORWARD: prev jwd/bdp/wdp
+            // for correct pattern on
+            // incremental runs
+            // =============================
+
+            let last_level =
+                fetch_last_level(
+                    &pool,
+                    &symbol,
+                    &series,
+                    tf_str,
+                )
+                .await;
+
+            // =============================
+            // FETCH ALL NEW OHLC PERIODS
+            // =============================
+
+            let ohlc_rows =
+                fetch_timeframe_ohlc(
+                    &pool,
+                    &symbol,
+                    &series,
+                    trunc_str,
+                    latest_date,
+                )
+                .await;
+
+            if ohlc_rows.is_empty() {
+                println!(
+                    "   ✅ {} up to date",
+                    tf_str
+                );
                 continue;
             }
-        }
-
-        // =================================
-        // FETCH RAW VALUES
-        // =================================
-
-        let symbol: String =
-            row.get("symbol");
-
-        let series: String =
-            row.get("series");
-
-        let open_price: f64 =
-            row.get("open_price");
-
-        let high_price: f64 =
-            row.get("high_price");
-
-        let low_price: f64 =
-            row.get("low_price");
-
-        let close_price: f64 =
-            row.get("close_price");
-
-        // =================================
-        // CALCULATIONS
-        // =================================
-
-        let range_value =
-            calculate_range(
-                high_price,
-                low_price
-            );
-
-        let buffer_value =
-            calculate_buffer(
-                range_value
-            );
-
-        let jgd =
-            calculate_jgd(
-                high_price,
-                buffer_value
-            );
-
-        let jwd =
-            calculate_jwd(
-                low_price,
-                buffer_value
-            );
-
-        let bdp =
-            calculate_bdp(
-                close_price,
-                buffer_value
-            );
-
-        let wdp =
-            calculate_wdp(
-                close_price,
-                buffer_value
-            );
-
-        let pattern =
-            detect_pattern(
-                open_price,
-                close_price
-            );
-
-        // =================================
-        // BUILD LEVEL MODEL
-        // =================================
-
-        let level = Level {
-
-            symbol,
-
-            series,
-
-            trade_date,
-
-            open_price,
-
-            high_price,
-
-            low_price,
-
-            close_price,
-
-            range_value,
-
-            buffer_value,
-
-            jgd,
-
-            jwd,
-
-            bdp,
-
-            wdp,
-
-            pattern,
-        };
-
-        // =================================
-        // INSERT LEVEL
-        // =================================
-
-        insert_level(
-            &pool,
-            &level
-        )
-        .await;
-
-        processed += 1;
-
-        // =================================
-        // LOGGING
-        // =================================
-
-        if processed % 1000 == 0 {
 
             println!(
-                "⚡ Processed {} rows",
-                processed
+                "   ⏳ {} — {} new periods",
+                tf_str,
+                ohlc_rows.len()
             );
+
+            // =============================
+            // CARRY FORWARD PREV STATE
+            // =============================
+
+            let mut prev_jwd =
+                last_level.map(|(jwd, _, _)| jwd);
+
+            let mut prev_bdp =
+                last_level.map(|(_, bdp, _)| bdp);
+
+            // =============================
+            // COMPUTE + INSERT EACH PERIOD
+            // =============================
+
+            for ohlc in &ohlc_rows {
+
+                let range_value =
+                    calculate_range(
+                        ohlc.high_price,
+                        ohlc.low_price,
+                    );
+
+                let buffer_value =
+                    calculate_buffer(
+                        ohlc.close_price,
+                        range_value,
+                    );
+
+                let jgd =
+                    calculate_jgd(
+                        ohlc.high_price,
+                        range_value,
+                    );
+
+                let jwd =
+                    calculate_jwd(
+                        ohlc.low_price,
+                        range_value,
+                    );
+
+                // ===========================
+                // PATTERN + BDP/WDP
+                // first period has no prev
+                // ===========================
+
+                let (pattern, bdp, wdp) =
+                    match prev_jwd {
+
+                        Some(pjwd) => {
+
+                            let pat =
+                                detect_pattern(
+                                    jgd,
+                                    jwd,
+                                    pjwd,
+                                );
+
+                            let (new_bdp, new_wdp) =
+                                update_bdp_wdp(
+                                    &pat,
+                                    jgd,
+                                    jwd,
+                                    prev_bdp.unwrap_or(jgd),
+                                );
+
+                            (pat, new_bdp, new_wdp)
+                        }
+
+                        None => (
+                            String::new(),
+                            jgd,
+                            jwd,
+                        ),
+                    };
+
+                // ===========================
+                // BUILD LEVEL
+                // ===========================
+
+                let level = Level {
+                    symbol:       symbol.clone(),
+                    series:       series.clone(),
+                    timeframe:    tf_str.to_string(),
+                    trade_date:   ohlc.trade_date,
+                    open_price:   ohlc.open_price,
+                    high_price:   ohlc.high_price,
+                    low_price:    ohlc.low_price,
+                    close_price:  ohlc.close_price,
+                    range_value,
+                    buffer_value,
+                    jgd,
+                    jwd,
+                    bdp,
+                    wdp,
+                    pattern,
+                };
+
+                // ===========================
+                // INSERT
+                // ===========================
+
+                insert_level(&pool, &level).await;
+
+                // ===========================
+                // ROLL FORWARD FOR NEXT PERIOD
+                // ===========================
+
+                prev_jwd = Some(jwd);
+                prev_bdp = Some(bdp);
+
+                total_processed += 1;
+            }
         }
     }
 
@@ -294,13 +276,11 @@ async fn main() -> Result<()>
     // COMPLETE
     // =====================================
 
-    println!(
-        "\n🎉 Calculation Complete"
-    );
+    println!("\n🎉 Calculation Complete");
 
     println!(
         "📦 Total Levels Generated: {}",
-        processed
+        total_processed
     );
 
     Ok(())

@@ -16,6 +16,7 @@
     import MiniChart
         from "$lib/components/MiniChart.svelte";
 
+    import { goto } from "$app/navigation";
     // =====================================
     // STATE
     // =====================================
@@ -25,6 +26,9 @@
 
     let series =
         $state<string[]>([]);
+
+    let role =
+        $state("");
 
     let selectedSymbol =
         $state("");
@@ -409,6 +413,24 @@
 
     onMount(async () => {
 
+    const token =
+
+        localStorage.getItem(
+            "token"
+        );
+
+        if (!token) {
+
+            goto("/login");
+
+            return;
+        }
+
+        role =
+            localStorage.getItem(
+                "role"
+            ) ?? "";
+
         await loadSymbols();
 
         if (selectedSymbol) {
@@ -426,12 +448,66 @@
         <div>
 
             <h1>
-                NSE Market Terminal
+                Airaa Stock Handler
             </h1>
 
             <p>
-                Rust + TimescaleDB Analysis Engine
+                NSE Market Terminal
             </p>
+
+            <div class="nav-actions">
+
+                <button
+                    class="nav-btn"
+
+                    onclick={() => goto("/")}
+                >
+
+                    Dashboard
+
+                </button>
+
+                {#if role === "admin"}
+
+                    <button
+                        class="nav-btn"
+
+                        onclick={() => goto("/admin")}
+                    >
+
+                        Admin
+
+                    </button>
+
+                {/if}
+
+                <button
+
+                    class="logout-btn"
+
+                    onclick={() => {
+
+                        localStorage.removeItem(
+                            "token"
+                        );
+
+                        localStorage.removeItem(
+                            "role"
+                        );
+
+                        localStorage.removeItem(
+                            "is_root"
+                        );
+
+                        goto("/login");
+                    }}
+                >
+
+                    Logout
+
+                </button>
+
+            </div>
 
         </div>
 
@@ -1136,5 +1212,59 @@ select {
 
     color: #22c55e;
 }
+.nav-actions {
 
+    display: flex;
+
+    gap: 12px;
+
+    align-items: center;
+}
+
+.nav-btn {
+
+    background: #1e293b;
+
+    border:
+        1px solid #334155;
+
+    color: white;
+
+    padding: 10px 18px;
+
+    border-radius: 10px;
+
+    cursor: pointer;
+
+    font-weight: 700;
+
+    transition: 0.15s;
+}
+
+.nav-btn:hover {
+
+    background: #334155;
+}
+
+.logout-btn {
+
+    background: #dc2626;
+
+    border: none;
+
+    color: white;
+
+    padding: 10px 18px;
+
+    border-radius: 10px;
+
+    cursor: pointer;
+
+    font-weight: 700;
+}
+
+.logout-btn:hover {
+
+    background: #b91c1c;
+}
 </style>

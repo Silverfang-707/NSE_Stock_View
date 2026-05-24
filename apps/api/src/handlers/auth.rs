@@ -3,14 +3,20 @@ use axum::{
     Json,
 };
 
+use serde::Deserialize;
+
 use sqlx::Row;
 
 use crate::{
+
     auth::{
+
         jwt::generate_jwt,
 
         password::{
+
             hash_password,
+
             verify_password,
         },
     },
@@ -18,27 +24,24 @@ use crate::{
     models::user::LoginRequest,
 };
 
-pub async fn create_admin()
--> Json<serde_json::Value>
-{
+// =====================================
+// CREATE USER REQUEST
+// =====================================
 
-    let password =
-        "admin123";
+#[derive(Deserialize)]
 
-    let hash =
-        hash_password(password);
+pub struct CreateUserRequest {
 
-    Json(
-        serde_json::json!({
+    pub username: String,
 
-            "username": "admin",
+    pub password: String,
 
-            "password": password,
-
-            "password_hash": hash
-        })
-    )
+    pub role: String,
 }
+
+// =====================================
+// LOGIN
+// =====================================
 
 pub async fn login(
 
@@ -55,13 +58,21 @@ pub async fn login(
         sqlx::query(
             r#"
             SELECT
+
                 id,
+
                 password_hash,
-                role
+
+                role,
+
+                is_root
+
             FROM users
+
             WHERE username = $1
             "#
         )
+
         .bind(&payload.username)
 
         .fetch_optional(&pool)
@@ -105,17 +116,24 @@ pub async fn login(
         );
     }
 
-    let user_id: uuid::Uuid =
+    let user_id: i32 =
         user.get("id");
 
     let role: String =
         user.get("role");
 
+    let is_root: bool =
+        user.get("is_root");
+
     let token =
         generate_jwt(
-            user_id.to_string(),
-            role.clone()
-        );
+
+        user_id.to_string(),
+
+        role.clone(),
+
+        is_root
+    );
 
     Json(
         serde_json::json!({
@@ -124,7 +142,117 @@ pub async fn login(
 
             "token": token,
 
-            "role": role
+            "role": role,
+
+            "is_root": is_root
+        })
+    )
+}
+
+// =====================================
+// CREATE USER
+// =====================================
+
+pub async fn create_user(
+
+    State(pool): State<
+        sqlx::Pool<sqlx::Postgres>
+    >,
+
+    Json(payload): Json<CreateUserRequest>,
+)
+-> Json<serde_json::Value>
+{
+
+    let existing =
+        sqlx::query(
+            r#"
+            SELECT id
+
+            FROM users
+
+            WHERE username = $1
+            "#
+        )
+
+        .bind(&payload.username)
+
+        .fetch_optional(&pool)
+
+        .await
+
+        .unwrap();
+
+    if existing.is_some() {
+
+        return Json(
+            serde_json::json!({
+
+                "success": false,
+
+                "error":
+                    "Username already exists"
+            })
+        );
+    }
+
+    let hashed_password =
+        hash_password(
+            &payload.password
+        );
+
+    let is_admin =
+        payload.role == "admin";
+
+    sqlx::query(
+        r#"
+        INSERT INTO users (
+
+            username,
+
+            password_hash,
+
+            role,
+
+            is_admin,
+
+            is_root
+
+        )
+
+        VALUES (
+
+            $1,
+
+            $2,
+
+            $3,
+
+            $4,
+
+            FALSE
+        )
+        "#
+    )
+
+    .bind(&payload.username)
+
+    .bind(&hashed_password)
+
+    .bind(&payload.role)
+
+    .bind(is_admin)
+
+    .execute(&pool)
+
+    .await
+
+    .unwrap();
+
+    Json(
+        serde_json::json!({
+
+            "success": true
         })
     )
 }

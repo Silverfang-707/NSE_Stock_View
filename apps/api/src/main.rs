@@ -3,10 +3,15 @@ mod models;
 mod auth;
 
 use axum::{
-    routing::get,
-    routing::post,
-    Router,
     middleware,
+
+    routing::{
+        delete,
+        get,
+        post,
+    },
+
+    Router,
 };
 
 use auth::middleware::admin_guard;
@@ -18,6 +23,11 @@ use std::env;
 use db::create_pool;
 
 use handlers::{
+
+    // =====================================
+    // MARKET
+    // =====================================
+
     admin::ingest_latest,
 
     backfill::backfill_data,
@@ -32,30 +42,57 @@ use handlers::{
 
     levels::get_levels,
 
+    // =====================================
+    // AUTH
+    // =====================================
+
     auth::{
-        create_admin,
+
         login,
+
+        create_user,
+    },
+
+    // =====================================
+    // ADMIN USERS
+    // =====================================
+
+    admin_users::{
+
+        list_users,
+
+        delete_user,
     },
 };
 
 use tower_http::cors::CorsLayer;
 
 #[tokio::main]
+
 async fn main() {
 
     dotenv().ok();
 
     let database_url =
         env::var("DATABASE_URL")
-            .expect("DATABASE_URL missing");
+            .expect(
+                "DATABASE_URL missing"
+            );
 
     let pool =
-        create_pool(&database_url).await;
+        create_pool(&database_url)
+            .await;
 
-    println!("✅ Database Connected");
+    println!(
+        "✅ Database Connected"
+    );
 
     let app =
         Router::new()
+
+            // =====================================
+            // PUBLIC MARKET ROUTES
+            // =====================================
 
             .route(
                 "/symbols",
@@ -68,13 +105,8 @@ async fn main() {
             )
 
             .route(
-                "/auth/create-admin",
-                get(create_admin)
-            )
-
-            .route(
-                "/auth/login",
-                post(login)
+                "/series",
+                get(get_series)
             )
 
             .route(
@@ -83,25 +115,37 @@ async fn main() {
             )
 
             .route(
-                "/series",
-                get(get_series)
-            )
-
-            .route(
                 "/analysis/{symbol}",
                 get(get_analysis)
             )
 
             .route(
-    "/levels/{symbol}",
-            get(get_levels)
-        )
+                "/levels/{symbol}",
+                get(get_levels)
+            )
+
+            // =====================================
+            // AUTH
+            // =====================================
+
+            .route(
+                "/auth/login",
+                post(login)
+            )
+
+            // =====================================
+            // ADMIN
+            // =====================================
 
             .nest(
 
                 "/admin",
 
                 Router::new()
+
+                    // =========================
+                    // MARKET OPS
+                    // =========================
 
                     .route(
                         "/ingest",
@@ -113,12 +157,39 @@ async fn main() {
                         get(backfill_data)
                     )
 
+                    // =========================
+                    // USER MANAGEMENT
+                    // =========================
+
+                    .route(
+                        "/create-user",
+                        post(create_user)
+                    )
+
+                    .route(
+                        "/users",
+                        get(list_users)
+                    )
+
+                    .route(
+                        "/users/{id}",
+                        delete(delete_user)
+                    )
+
+                    // =========================
+                    // AUTH MIDDLEWARE
+                    // =========================
+
                     .layer(
                         middleware::from_fn(
                             admin_guard
                         )
                     )
             )
+
+            // =====================================
+            // GLOBAL LAYERS
+            // =====================================
 
             .layer(
                 CorsLayer::permissive()

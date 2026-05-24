@@ -6,3 +6,4 @@ pub mod symbols;
 pub mod analysis;
 pub mod series;
 pub mod levels;
+pub mod admin_users;

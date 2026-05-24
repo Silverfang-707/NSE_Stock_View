@@ -4,15 +4,26 @@ use chrono::{
 };
 
 use jsonwebtoken::{
+
+    decode,
     encode,
+
+    DecodingKey,
     EncodingKey,
+
     Header,
+    Validation,
 };
 
 use serde::{
+
     Deserialize,
     Serialize,
 };
+
+// =====================================
+// CLAIMS
+// =====================================
 
 #[derive(Debug, Serialize, Deserialize)]
 
@@ -22,15 +33,25 @@ pub struct Claims {
 
     pub role: String,
 
+    pub is_root: bool,
+
     pub exp: usize,
 }
+
+// =====================================
+// GENERATE JWT
+// =====================================
 
 pub fn generate_jwt(
 
     user_id: String,
 
     role: String,
-) -> String {
+
+    is_root: bool,
+)
+-> String
+{
 
     let expiration =
 
@@ -44,7 +65,10 @@ pub fn generate_jwt(
 
         role,
 
-        exp: expiration.timestamp()
+        is_root,
+
+        exp:
+            expiration.timestamp()
             as usize,
     };
 
@@ -53,6 +77,7 @@ pub fn generate_jwt(
         std::env::var(
             "JWT_SECRET"
         )
+
         .expect(
             "JWT_SECRET missing"
         );
@@ -67,5 +92,46 @@ pub fn generate_jwt(
             secret.as_bytes()
         ),
     )
+
     .unwrap()
+}
+
+// =====================================
+// DECODE JWT
+// =====================================
+
+pub fn decode_jwt(
+    token: &str
+)
+-> Result<
+    Claims,
+
+    jsonwebtoken::errors::Error
+>
+{
+
+    let secret =
+
+        std::env::var(
+            "JWT_SECRET"
+        )
+
+        .expect(
+            "JWT_SECRET missing"
+        );
+
+    let decoded =
+
+        decode::<Claims>(
+
+            token,
+
+            &DecodingKey::from_secret(
+                secret.as_bytes()
+            ),
+
+            &Validation::default(),
+        )?;
+
+    Ok(decoded.claims)
 }

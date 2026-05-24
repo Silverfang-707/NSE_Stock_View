@@ -6,8 +6,4 @@ pub mod jgd;
 
 pub mod jwd;
 
-pub mod bdp;
-
-pub mod wdp;
-
 pub mod patterns;
