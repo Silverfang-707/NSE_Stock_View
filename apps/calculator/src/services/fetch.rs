@@ -105,53 +105,126 @@ pub async fn fetch_timeframe_ohlc(
     pool:       &sqlx::Pool<sqlx::Postgres>,
     symbol:     &str,
     series:     &str,
-    trunc:      &str,   // "day", "week", "month", "quarter", "year"
+    trunc:      &str,
     since_date: Option<NaiveDate>,
 ) -> Vec<OhlcRow> {
 
-    // if incremental, only fetch periods after latest calculated date
-    let since_filter = match since_date {
-        Some(d) => format!("AND date_trunc('{}', trade_date) > '{}'", trunc, d),
-        None    => String::new(),
+    let period_expr = match trunc {
+
+        "half_yearly" => {
+            r#"
+            make_date(
+                EXTRACT(YEAR FROM trade_date)::int,
+                CASE
+                    WHEN EXTRACT(MONTH FROM trade_date) <= 6
+                    THEN 1
+                    ELSE 7
+                END,
+                1
+            )
+            "#
+        }
+
+        _ => {
+            Box::leak(
+                format!(
+                    "date_trunc('{}', trade_date)::date",
+                    trunc
+                )
+                .into_boxed_str()
+            )
+        }
     };
+
+    let since_filter =
+        match since_date {
+
+            Some(d) => format!(
+                "AND ({}) > '{}'",
+                period_expr,
+                d
+            ),
+
+            None => String::new(),
+        };
 
     let sql = format!(
         r#"
         SELECT
-            date_trunc('{trunc}', trade_date)::date AS trade_date,
 
-            (ARRAY_AGG(open_price  ORDER BY trade_date ASC ))[1] AS open_price,
-            MAX(high_price)                                       AS high_price,
-            MIN(low_price)                                        AS low_price,
-            (ARRAY_AGG(close_price ORDER BY trade_date DESC))[1] AS close_price
+            ({period_expr}) AS trade_date,
+
+            (
+                ARRAY_AGG(
+                    open_price
+                    ORDER BY trade_date ASC
+                )
+            )[1]
+            AS open_price,
+
+            MAX(high_price)
+            AS high_price,
+
+            MIN(low_price)
+            AS low_price,
+
+            (
+                ARRAY_AGG(
+                    close_price
+                    ORDER BY trade_date DESC
+                )
+            )[1]
+            AS close_price
 
         FROM daily_prices
+
         WHERE symbol = $1
-        AND   series = $2
+
+        AND series = $2
+
         {since_filter}
 
-        GROUP BY date_trunc('{trunc}', trade_date)
-        ORDER BY date_trunc('{trunc}', trade_date) ASC
+        GROUP BY ({period_expr})
+
+        ORDER BY ({period_expr}) ASC
         "#,
-        trunc = trunc,
+        period_expr = period_expr,
         since_filter = since_filter,
     );
 
-    let rows = sqlx::query(&sql)
+    let rows =
+        sqlx::query(&sql)
+
         .bind(symbol)
+
         .bind(series)
+
         .fetch_all(pool)
+
         .await
+
         .unwrap_or_default();
 
-    rows.iter().filter_map(|row| {
-        Some(OhlcRow {
-            trade_date:  row.try_get("trade_date").ok()?,
-            open_price:  row.try_get("open_price").ok()?,
-            high_price:  row.try_get("high_price").ok()?,
-            low_price:   row.try_get("low_price").ok()?,
-            close_price: row.try_get("close_price").ok()?,
+    rows.iter()
+        .filter_map(|row| {
+
+            Some(OhlcRow {
+
+                trade_date:
+                    row.try_get("trade_date").ok()?,
+
+                open_price:
+                    row.try_get("open_price").ok()?,
+
+                high_price:
+                    row.try_get("high_price").ok()?,
+
+                low_price:
+                    row.try_get("low_price").ok()?,
+
+                close_price:
+                    row.try_get("close_price").ok()?,
+            })
         })
-    })
-    .collect()
+        .collect()
 }

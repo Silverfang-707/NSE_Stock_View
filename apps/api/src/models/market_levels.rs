@@ -29,4 +29,16 @@ pub struct MarketLevelResponse {
     pub wdp: f64,
 
     pub pattern: String,
+
+    // =========================
+    // LEGACY PATTERN SUPPORT
+    // =========================
+
+    pub prev_jgd: Option<f64>,
+
+    pub prev_jwd: Option<f64>,
+
+    pub prev_bdp: Option<f64>,
+
+    pub prev_wdp: Option<f64>,
 }

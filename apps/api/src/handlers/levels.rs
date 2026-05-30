@@ -3,7 +3,6 @@ use axum::{
         Path,
         State,
     },
-
     Json,
 };
 
@@ -26,11 +25,56 @@ pub async fn get_levels(
     let rows =
         sqlx::query(
             r#"
+            WITH levels_with_prev AS (
+
+                SELECT
+
+                    *,
+
+                    LAG(jgd)
+                    OVER (
+
+                        PARTITION BY timeframe
+
+                        ORDER BY trade_date
+
+                    ) AS prev_jgd,
+
+                    LAG(jwd)
+                    OVER (
+
+                        PARTITION BY timeframe
+
+                        ORDER BY trade_date
+
+                    ) AS prev_jwd,
+
+                    LAG(bdp)
+                    OVER (
+
+                        PARTITION BY timeframe
+
+                        ORDER BY trade_date
+
+                    ) AS prev_bdp,
+
+                    LAG(wdp)
+                    OVER (
+
+                        PARTITION BY timeframe
+
+                        ORDER BY trade_date
+
+                    ) AS prev_wdp
+
+                FROM market_levels
+
+                WHERE symbol = $1
+            )
+
             SELECT *
 
-            FROM market_levels
-
-            WHERE symbol = $1
+            FROM levels_with_prev
 
             ORDER BY
 
@@ -98,6 +142,18 @@ pub async fn get_levels(
 
                     pattern:
                         row.get("pattern"),
+
+                    prev_jgd:
+                        row.try_get("prev_jgd").ok(),
+
+                    prev_jwd:
+                        row.try_get("prev_jwd").ok(),
+
+                    prev_bdp:
+                        row.try_get("prev_bdp").ok(),
+
+                    prev_wdp:
+                        row.try_get("prev_wdp").ok(),
                 }
             })
 

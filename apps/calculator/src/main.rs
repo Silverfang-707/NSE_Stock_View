@@ -67,11 +67,18 @@ async fn main() -> Result<()> {
     // =====================================
 
     let timeframes = vec![
-        Timeframe::Daily,
-        Timeframe::Weekly,
-        Timeframe::Monthly,
-        Timeframe::Quarterly,
-        Timeframe::Yearly,
+
+    Timeframe::Daily,
+
+    Timeframe::Weekly,
+
+    Timeframe::Monthly,
+
+    Timeframe::Quarterly,
+
+    Timeframe::HalfYearly,
+
+    Timeframe::Yearly,
     ];
 
     let mut total_processed = 0;

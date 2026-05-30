@@ -25,4 +25,16 @@ export interface MarketLevel {
     wdp: number;
 
     pattern: string;
+
+    // =====================
+    // LEGACY PATTERN SUPPORT
+    // =====================
+
+    prev_jgd?: number;
+
+    prev_jwd?: number;
+
+    prev_bdp?: number;
+
+    prev_wdp?: number;
 }
