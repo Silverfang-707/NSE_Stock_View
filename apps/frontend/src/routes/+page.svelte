@@ -145,7 +145,7 @@
 
   function buildGrid(level: Level): Grid | null {
     if (!level) return null;
-    const { bdp, wdp, range_value: r, buffer_value: buf, jgd, jwd } = level;
+    const { bdp, wdp, range_value: r, buffer_value: buf, jgd, jwd, pattern } = level;
 
     const greenCols  = PLAN_MULTIPLIERS.map(m => round2(bdp + r * m));
     const redCols    = PLAN_MULTIPLIERS.map(m => round2(wdp - r * m));
@@ -161,13 +161,27 @@
     const jgdRedAbove   = jgdRedCols.map(c => round2(c + buf));
     const jgdRedBelow   = jgdRedCols.map(c => round2(c - buf));
 
-    // Consolidate legacy previous values for the center display
-    const rawPrev = [level.prev_bdp, level.prev_jgd, level.prev_jwd, level.prev_wdp]
-      .filter((v): v is number => v !== null && v !== undefined);
+    // =====================================
+    // LEGACY CONTEXT ROUTING (Based on Pattern)
+    // =====================================
+    let legacyContext: string[] | null = null;
 
-    const legacyContext = rawPrev.length > 0
-      ? rawPrev.sort((a, b) => b - a).map(fmt)
-      : null;
+    if (pattern === "3+1") {
+      legacyContext = [level.jgd, level.prev_jgd, level.prev_jwd]
+        .filter((v): v is number => v != null)
+        .sort((a, b) => a - b)
+        .map(fmt);
+    } 
+    else if (pattern === "2+2") {
+      legacyContext = [level.prev_jgd, level.prev_jwd, level.jgd, level.jwd]
+        .filter((v): v is number => v != null)
+        .map(fmt);
+    } 
+    else if (pattern === "2+1") {
+      legacyContext = [level.prev_jgd, level.jgd, level.jwd]
+        .filter((v): v is number => v != null)
+        .map(fmt);
+    }
 
     return {
       greenCols, greenAbove, greenBelow,
@@ -338,6 +352,9 @@
       const res = await fetch(`${API}/levels/${selectedSym}`, { headers: authHeaders() });
       if (!res.ok) throw new Error();
       const all = await res.json() as Level[];
+      
+      // Removed the `.filter(l => l.series === selectedSer)` logic since 
+      // the Axum backend isn't returning 'series' in the response yet.
       levels = all; 
     } catch {
       error  = 'Failed to load levels';
