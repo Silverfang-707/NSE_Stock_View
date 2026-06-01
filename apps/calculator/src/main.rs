@@ -1,20 +1,19 @@
 use anyhow::Result;
 use dotenvy::dotenv;
 use std::env;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
+use futures::stream::{self, StreamExt};
 
 use db::create_pool;
-use sqlx::Row;
 
 mod calculations;
 mod models;
 mod services;
 
 use calculations::{
-    range::calculate_range,
-    buffer::calculate_buffer,
-    jgd::calculate_jgd,
-    jwd::calculate_jwd,
-    patterns::{detect_pattern, update_bdp_wdp},
+    buffer::calculate_buffer, jgd::calculate_jgd, jwd::calculate_jwd, patterns::{detect_pattern, update_bdp_wdp}, range::calculate_range,
 };
 
 use models::{
@@ -23,272 +22,138 @@ use models::{
 };
 
 use services::fetch::{
-    fetch_symbols,
-    fetch_latest_level_date,
-    fetch_last_level,
-    fetch_timeframe_ohlc,
+    fetch_symbols, fetch_previous_state, fetch_timeframe_ohlc, SymbolSeries,
 };
-
-use services::insert::insert_level;
-
-// =====================================
-// MAIN
-// =====================================
+use services::insert::insert_levels_bulk;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-
     dotenv().ok();
 
-    let database_url =
-        env::var("DATABASE_URL")?;
-
-    let pool =
-        create_pool(&database_url).await;
+    let database_url = env::var("DATABASE_URL")?;
+    let pool = create_pool(&database_url).await;
+    
+    let start_time = Instant::now();
 
     println!("✅ Calculator DB Connected");
-
-    // =====================================
-    // FETCH SYMBOLS
-    // =====================================
-
+    println!("⏱️ Starting benchmark clock...");
     println!("\n📥 Fetching symbols...");
 
-    let symbols =
-        fetch_symbols(&pool).await;
-
-    println!(
-        "✅ Found {} symbols",
-        symbols.len()
-    );
-
-    // =====================================
-    // TIMEFRAMES
-    // =====================================
+    let symbols = fetch_symbols(&pool).await;
+    println!("✅ Found {} symbols", symbols.len());
 
     let timeframes = vec![
-
-    Timeframe::Daily,
-
-    Timeframe::Weekly,
-
-    Timeframe::Monthly,
-
-    Timeframe::Quarterly,
-
-    Timeframe::HalfYearly,
-
-    Timeframe::Yearly,
+        Timeframe::Daily,
+        Timeframe::Weekly,
+        Timeframe::Monthly,
+        Timeframe::Quarterly,
+        Timeframe::HalfYearly,
+        Timeframe::Yearly,
     ];
 
-    let mut total_processed = 0;
+    let total_processed = Arc::new(AtomicUsize::new(0));
 
     // =====================================
-    // PROCESS EACH SYMBOL
+    // CONCURRENT PROCESSING
+    // Starting safe at 4-6 concurrent streams
     // =====================================
+    stream::iter(symbols)
+        .for_each_concurrent(6, |sym_data| {
+            let pool = pool.clone();
+            let timeframes = timeframes.clone();
+            let total_processed = Arc::clone(&total_processed);
 
-    for row in &symbols {
-
-        let symbol: String = row.get("symbol");
-        let series: String = row.get("series");
-
-        println!(
-            "\n📊 Processing {} [{}]",
-            symbol,
-            series
-        );
-
-        // =================================
-        // PROCESS EACH TIMEFRAME
-        // =================================
-
-        for timeframe in &timeframes {
-
-            let tf_str    = timeframe.as_str();
-            let trunc_str = timeframe.trunc_str();
-
-            // =============================
-            // INCREMENTAL: latest calculated
-            // date per symbol/series/timeframe
-            // =============================
-
-            let latest_date =
-                fetch_latest_level_date(
-                    &pool,
-                    &symbol,
-                    &series,
-                    tf_str,
-                )
-                .await;
-
-            // =============================
-            // CARRY FORWARD: prev jwd/bdp/wdp
-            // for correct pattern on
-            // incremental runs
-            // =============================
-
-            let last_level =
-                fetch_last_level(
-                    &pool,
-                    &symbol,
-                    &series,
-                    tf_str,
-                )
-                .await;
-
-            // =============================
-            // FETCH ALL NEW OHLC PERIODS
-            // =============================
-
-            let ohlc_rows =
-                fetch_timeframe_ohlc(
-                    &pool,
-                    &symbol,
-                    &series,
-                    trunc_str,
-                    latest_date,
-                )
-                .await;
-
-            if ohlc_rows.is_empty() {
-                println!(
-                    "   ✅ {} up to date",
-                    tf_str
-                );
-                continue;
+            async move {
+                process_symbol(&pool, sym_data, &timeframes, total_processed).await;
             }
-
-            println!(
-                "   ⏳ {} — {} new periods",
-                tf_str,
-                ohlc_rows.len()
-            );
-
-            // =============================
-            // CARRY FORWARD PREV STATE
-            // =============================
-
-            let mut prev_jwd =
-                last_level.map(|(jwd, _, _)| jwd);
-
-            let mut prev_bdp =
-                last_level.map(|(_, bdp, _)| bdp);
-
-            // =============================
-            // COMPUTE + INSERT EACH PERIOD
-            // =============================
-
-            for ohlc in &ohlc_rows {
-
-                let range_value =
-                    calculate_range(
-                        ohlc.high_price,
-                        ohlc.low_price,
-                    );
-
-                let buffer_value =
-                    calculate_buffer(
-                        ohlc.close_price,
-                        range_value,
-                    );
-
-                let jgd =
-                    calculate_jgd(
-                        ohlc.high_price,
-                        range_value,
-                    );
-
-                let jwd =
-                    calculate_jwd(
-                        ohlc.low_price,
-                        range_value,
-                    );
-
-                // ===========================
-                // PATTERN + BDP/WDP
-                // first period has no prev
-                // ===========================
-
-                let (pattern, bdp, wdp) =
-                    match prev_jwd {
-
-                        Some(pjwd) => {
-
-                            let pat =
-                                detect_pattern(
-                                    jgd,
-                                    jwd,
-                                    pjwd,
-                                );
-
-                            let (new_bdp, new_wdp) =
-                                update_bdp_wdp(
-                                    &pat,
-                                    jgd,
-                                    jwd,
-                                    prev_bdp.unwrap_or(jgd),
-                                );
-
-                            (pat, new_bdp, new_wdp)
-                        }
-
-                        None => (
-                            String::new(),
-                            jgd,
-                            jwd,
-                        ),
-                    };
-
-                // ===========================
-                // BUILD LEVEL
-                // ===========================
-
-                let level = Level {
-                    symbol:       symbol.clone(),
-                    series:       series.clone(),
-                    timeframe:    tf_str.to_string(),
-                    trade_date:   ohlc.trade_date,
-                    open_price:   ohlc.open_price,
-                    high_price:   ohlc.high_price,
-                    low_price:    ohlc.low_price,
-                    close_price:  ohlc.close_price,
-                    range_value,
-                    buffer_value,
-                    jgd,
-                    jwd,
-                    bdp,
-                    wdp,
-                    pattern,
-                };
-
-                // ===========================
-                // INSERT
-                // ===========================
-
-                insert_level(&pool, &level).await;
-
-                // ===========================
-                // ROLL FORWARD FOR NEXT PERIOD
-                // ===========================
-
-                prev_jwd = Some(jwd);
-                prev_bdp = Some(bdp);
-
-                total_processed += 1;
-            }
-        }
-    }
-
-    // =====================================
-    // COMPLETE
-    // =====================================
+        })
+        .await;
 
     println!("\n🎉 Calculation Complete");
-
-    println!(
-        "📦 Total Levels Generated: {}",
-        total_processed
-    );
+    println!("📦 Total Levels Generated: {}", total_processed.load(Ordering::Relaxed));
+    println!("⏱️ Total Execution Time: {:.2?}", start_time.elapsed());
 
     Ok(())
+}
+
+// =====================================
+// PROCESS SINGLE SYMBOL
+// =====================================
+async fn process_symbol(
+    pool: &sqlx::Pool<sqlx::Postgres>,
+    sym_data: SymbolSeries,
+    timeframes: &[Timeframe],
+    total_processed: Arc<AtomicUsize>,
+) {
+    for timeframe in timeframes {
+        let tf_str = timeframe.as_str();
+        let trunc_str = timeframe.trunc_str();
+
+        let prev_state = fetch_previous_state(pool, &sym_data.symbol, &sym_data.series, tf_str).await;
+        
+        let latest_date = prev_state.map(|(date, _, _, _)| date);
+        let mut prev_jwd = prev_state.map(|(_, jwd, _, _)| jwd);
+        let mut prev_bdp = prev_state.map(|(_, _, bdp, _)| bdp);
+
+        let ohlc_rows = fetch_timeframe_ohlc(
+            pool,
+            &sym_data.symbol,
+            &sym_data.series,
+            trunc_str,
+            latest_date,
+        )
+        .await;
+
+        if ohlc_rows.is_empty() {
+            continue;
+        }
+
+        let mut levels_to_insert = Vec::with_capacity(ohlc_rows.len());
+
+        for ohlc in &ohlc_rows {
+            let range_value = calculate_range(ohlc.high_price, ohlc.low_price);
+            let buffer_value = calculate_buffer(ohlc.close_price, range_value);
+            let jgd = calculate_jgd(ohlc.high_price, range_value);
+            let jwd = calculate_jwd(ohlc.low_price, range_value);
+
+            let (pattern_enum, bdp, wdp) = match prev_jwd {
+                Some(pjwd) => {
+                    let pat = detect_pattern(jgd, jwd, pjwd);
+                    let (new_bdp, new_wdp) = update_bdp_wdp(pat, jgd, jwd, prev_bdp.unwrap_or(jgd));
+                    (pat, new_bdp, new_wdp)
+                }
+                None => (calculations::patterns::Pattern::None, jgd, jwd), 
+            };
+
+            levels_to_insert.push(Level {
+                symbol:       sym_data.symbol.clone(),
+                series:       sym_data.series.clone(),
+                timeframe:    tf_str.to_string(),
+                trade_date:   ohlc.trade_date,
+                open_price:   ohlc.open_price,
+                high_price:   ohlc.high_price,
+                low_price:    ohlc.low_price,
+                close_price:  ohlc.close_price,
+                range_value,
+                buffer_value,
+                jgd,
+                jwd,
+                bdp,
+                wdp,
+                pattern:      pattern_enum.as_str().to_string(),
+            });
+
+            prev_jwd = Some(jwd);
+            prev_bdp = Some(bdp);
+        }
+
+        if !levels_to_insert.is_empty() {
+            let count = levels_to_insert.len();
+            insert_levels_bulk(pool, &levels_to_insert).await;
+            total_processed.fetch_add(count, Ordering::Relaxed);
+            
+            // Reduced terminal spam: only prints when actively inserting
+            println!("✅ {} [{}] {} — {} periods inserted", sym_data.symbol, sym_data.series, tf_str, count);
+        }
+    }
 }

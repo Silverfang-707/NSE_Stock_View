@@ -1,18 +1,18 @@
 use chrono::NaiveDate;
-use sqlx::postgres::PgRow;
 use sqlx::Row;
-
 use crate::models::ohlc::OhlcRow;
+
+#[derive(Debug, Clone)]
+pub struct SymbolSeries {
+    pub symbol: String,
+    pub series: String,
+}
 
 // =====================================
 // FETCH UNIQUE SYMBOLS
 // =====================================
-
-pub async fn fetch_symbols(
-    pool: &sqlx::Pool<sqlx::Postgres>,
-) -> Vec<PgRow> {
-
-    sqlx::query(
+pub async fn fetch_symbols(pool: &sqlx::Pool<sqlx::Postgres>) -> Vec<SymbolSeries> {
+    let rows = sqlx::query(
         r#"
         SELECT DISTINCT symbol, series
         FROM daily_prices
@@ -23,56 +23,30 @@ pub async fn fetch_symbols(
     )
     .fetch_all(pool)
     .await
-    .unwrap()
+    .unwrap_or_default();
+
+    rows.into_iter()
+        .filter_map(|row| {
+            Some(SymbolSeries {
+                symbol: row.try_get("symbol").ok()?,
+                series: row.try_get("series").ok()?,
+            })
+        })
+        .collect()
 }
 
 // =====================================
-// FETCH LATEST CALCULATED DATE
-// PER SYMBOL + SERIES + TIMEFRAME
+// FETCH PREVIOUS STATE (Combined Query)
 // =====================================
-
-pub async fn fetch_latest_level_date(
+pub async fn fetch_previous_state(
     pool:      &sqlx::Pool<sqlx::Postgres>,
     symbol:    &str,
     series:    &str,
     timeframe: &str,
-) -> Option<NaiveDate> {
-
+) -> Option<(NaiveDate, f64, f64, f64)> {
     let row = sqlx::query(
         r#"
-        SELECT MAX(trade_date) AS latest_date
-        FROM market_levels
-        WHERE symbol    = $1
-        AND   series    = $2
-        AND   timeframe = $3
-        "#
-    )
-    .bind(symbol)
-    .bind(series)
-    .bind(timeframe)
-    .fetch_one(pool)
-    .await
-    .ok()?;
-
-    row.try_get("latest_date").ok()
-}
-
-// =====================================
-// FETCH LAST KNOWN JWD/BDP/WDP
-// for carry-forward on incremental runs
-// =====================================
-
-pub async fn fetch_last_level(
-    pool:      &sqlx::Pool<sqlx::Postgres>,
-    symbol:    &str,
-    series:    &str,
-    timeframe: &str,
-) -> Option<(f64, f64, f64)> {
-    // returns (prev_jwd, prev_bdp, prev_wdp)
-
-    let row = sqlx::query(
-        r#"
-        SELECT jwd, bdp, wdp
+        SELECT trade_date, jwd, bdp, wdp
         FROM market_levels
         WHERE symbol    = $1
         AND   series    = $2
@@ -89,6 +63,7 @@ pub async fn fetch_last_level(
     .ok()??;
 
     Some((
+        row.try_get("trade_date").ok()?,
         row.try_get("jwd").ok()?,
         row.try_get("bdp").ok()?,
         row.try_get("wdp").ok()?,
@@ -97,10 +72,7 @@ pub async fn fetch_last_level(
 
 // =====================================
 // FETCH ALL OHLC ROWS FOR A TIMEFRAME
-// aggregated from daily_prices
-// only rows after since_date
 // =====================================
-
 pub async fn fetch_timeframe_ohlc(
     pool:       &sqlx::Pool<sqlx::Postgres>,
     symbol:     &str,
@@ -108,9 +80,7 @@ pub async fn fetch_timeframe_ohlc(
     trunc:      &str,
     since_date: Option<NaiveDate>,
 ) -> Vec<OhlcRow> {
-
     let period_expr = match trunc {
-
         "half_yearly" => {
             r#"
             make_date(
@@ -124,106 +94,45 @@ pub async fn fetch_timeframe_ohlc(
             )
             "#
         }
-
-        _ => {
-            Box::leak(
-                format!(
-                    "date_trunc('{}', trade_date)::date",
-                    trunc
-                )
-                .into_boxed_str()
-            )
-        }
+        _ => Box::leak(format!("date_trunc('{}', trade_date)::date", trunc).into_boxed_str()),
     };
 
-    let since_filter =
-        match since_date {
-
-            Some(d) => format!(
-                "AND ({}) > '{}'",
-                period_expr,
-                d
-            ),
-
-            None => String::new(),
-        };
+    let since_filter = match since_date {
+        Some(d) => format!("AND ({}) > '{}'", period_expr, d),
+        None => String::new(),
+    };
 
     let sql = format!(
         r#"
         SELECT
-
             ({period_expr}) AS trade_date,
-
-            (
-                ARRAY_AGG(
-                    open_price
-                    ORDER BY trade_date ASC
-                )
-            )[1]
-            AS open_price,
-
-            MAX(high_price)
-            AS high_price,
-
-            MIN(low_price)
-            AS low_price,
-
-            (
-                ARRAY_AGG(
-                    close_price
-                    ORDER BY trade_date DESC
-                )
-            )[1]
-            AS close_price
-
+            (ARRAY_AGG(open_price ORDER BY trade_date ASC))[1] AS open_price,
+            MAX(high_price) AS high_price,
+            MIN(low_price) AS low_price,
+            (ARRAY_AGG(close_price ORDER BY trade_date DESC))[1] AS close_price
         FROM daily_prices
-
-        WHERE symbol = $1
-
-        AND series = $2
-
+        WHERE symbol = $1 AND series = $2
         {since_filter}
-
         GROUP BY ({period_expr})
-
         ORDER BY ({period_expr}) ASC
-        "#,
-        period_expr = period_expr,
-        since_filter = since_filter,
+        "#
     );
 
-    let rows =
-        sqlx::query(&sql)
-
+    let rows = sqlx::query(&sql)
         .bind(symbol)
-
         .bind(series)
-
         .fetch_all(pool)
-
         .await
-
         .unwrap_or_default();
 
-    rows.iter()
+    rows.into_iter()
         .filter_map(|row| {
-
             Some(OhlcRow {
-
-                trade_date:
-                    row.try_get("trade_date").ok()?,
-
-                open_price:
-                    row.try_get("open_price").ok()?,
-
-                high_price:
-                    row.try_get("high_price").ok()?,
-
-                low_price:
-                    row.try_get("low_price").ok()?,
-
-                close_price:
-                    row.try_get("close_price").ok()?,
+                trade_date:  row.try_get("trade_date").ok()?,
+                open_price:  row.try_get("open_price").ok()?,
+                high_price:  row.try_get("high_price").ok()?,
+                low_price:   row.try_get("low_price").ok()?,
+                close_price: row.try_get("close_price").ok()?,
             })
         })
         .collect()
