@@ -106,6 +106,11 @@
   let adminCreating = $state(false);
   let adminError    = $state('');
   let adminSuccess  = $state('');
+  
+  // Market Update State
+  let updating      = $state(false);
+  let updateMessage = $state('');
+  let updateSuccess = $state(false);
 
   // ============================================================
   // DERIVED
@@ -307,9 +312,48 @@
     }
   }
 
+  async function updateMarket() {
+    if (updating) return;
+    
+    updating = true;
+    updateSuccess = false;
+    updateMessage = "Updating market data...";
+
+    try {
+      const response = await fetch(`${API}/admin/update-market`, {
+        method: "POST",
+        headers: authHeaders() 
+      });
+      
+      let result;
+      try {
+        result = await response.json();
+      } catch {
+        throw new Error("Invalid server response");
+      }
+
+      if (result.success) {
+        updateSuccess = true;
+        updateMessage = `Updated ${result.rows} rows across ${result.days_processed} trading days`;
+        await loadLevels();
+      } else {
+        updateMessage = result.error ?? "Update failed";
+      }
+    } catch (err) {
+      updateMessage = err instanceof Error && err.message === "Invalid server response" 
+        ? "Invalid server response. Check backend logs." 
+        : "Server error. Is the backend running?";
+      console.error(err);
+    } finally {
+      updating = false;
+    }
+  }
+
   function goAdmin() {
-    adminError   = '';
-    adminSuccess = '';
+    adminError    = '';
+    adminSuccess  = '';
+    updateMessage = '';
+    updateSuccess = false;
     view = 'admin';
     loadAdminUsers();
   }
@@ -353,8 +397,6 @@
       if (!res.ok) throw new Error();
       const all = await res.json() as Level[];
       
-      // Removed the `.filter(l => l.series === selectedSer)` logic since 
-      // the Axum backend isn't returning 'series' in the response yet.
       levels = all; 
     } catch {
       error  = 'Failed to load levels';
@@ -712,7 +754,83 @@
   .del-btn { padding: 3px 10px; background: #b91c1c; color: white; border: none; font-size: 12px; cursor: pointer; font-family: inherit; }
   .del-btn:hover { background: #991b1b; }
 
-  /* ── STATUS ── */
+  /* ── UPDATE MARKET STYLES ── */
+  .update-btn {
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 4px; 
+    padding: 10px 16px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 13px;
+    font-family: inherit;
+    transition: background 0.2s;
+  }
+  .update-btn:hover:not(:disabled) { background: #1d4ed8; }
+  .update-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+
+  .update-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+  }
+
+  .update-modal {
+    width: 420px;
+    background: #111827;
+    border: 1px solid #1f2937;
+    border-radius: 14px;
+    padding: 30px;
+    text-align: center;
+    color: #f9fafb;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+
+  .update-modal p { font-size: 15px; margin-bottom: 8px; font-weight: 500; }
+  .update-modal small { font-size: 12px; color: #9ca3af; }
+
+  .progress-bar {
+    width: 100%;
+    height: 10px;
+    background: #1f2937;
+    border-radius: 999px;
+    overflow: hidden;
+    margin: 24px 0;
+  }
+
+  .progress-fill {
+    width: 40%;
+    height: 100%;
+    background: #3b82f6;
+    animation: progressMove 1.2s infinite linear;
+    border-radius: 999px;
+  }
+
+  @keyframes progressMove {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(300%); }
+  }
+
+  .update-spinner {
+    width: 42px;
+    height: 42px;
+    border: 4px solid #374151;
+    border-top-color: #3b82f6;
+    border-radius: 50%;
+    margin: 0 auto 20px;
+    animation: spin 1s linear infinite;
+  }
+
+  .status-msg { margin-top: 12px; font-size: 13px; font-weight: 500; }
+  .status-msg.success { color: #16a34a; }
+  .status-msg.error { color: #dc2626; }
+
+  /* ── STATUS & SPINNER ── */
   .status    { padding: 40px; text-align: center; color: var(--text-muted); font-size: 14px; }
   .error-msg { color: var(--hint-red); padding: 12px 20px; font-size: 13px; }
 
@@ -940,6 +1058,25 @@
 
   {:else if view === 'admin'}
   <div class="admin-wrap">
+
+    <div class="admin-card">
+      <h2>Market Data</h2>
+      <div style="margin-top: 10px;">
+        <button class="update-btn" disabled={updating} onclick={updateMarket}>
+          {#if updating}
+            Updating...
+          {:else}
+            Update Database
+          {/if}
+        </button>
+        {#if updateMessage && !updating}
+          <div class="status-msg" class:success={updateSuccess} class:error={!updateSuccess}>
+            {updateMessage}
+          </div>
+        {/if}
+      </div>
+    </div>
+
     <div class="admin-card">
       <h2>Create User</h2>
       <div class="form-row">
@@ -1000,4 +1137,18 @@
   {/if}
 
 </div>
+
+{#if updating}
+<div class="update-overlay">
+  <div class="update-modal">
+    <div class="update-spinner"></div>
+    <div class="progress-bar">
+      <div class="progress-fill"></div>
+    </div>
+    <p>Downloading market data and recalculating levels...</p>
+    <small>Please do not close this page. This may take several minutes.</small>
+  </div>
+</div>
+{/if}
+
 {/if}

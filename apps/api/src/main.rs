@@ -42,6 +42,8 @@ use handlers::{
 
     levels::get_levels,
 
+    update_market::update_market,
+
     // =====================================
     // AUTH
     // =====================================
@@ -155,6 +157,11 @@ async fn main() {
                     .route(
                         "/backfill",
                         get(backfill_data)
+                    )
+
+                    .route(
+                        "/update-market",
+                        post(update_market)
                     )
 
                     // =========================
