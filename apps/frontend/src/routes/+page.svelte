@@ -4,7 +4,7 @@
   // ============================================================
   // CONFIG
   // ============================================================
-  const API = 'http://localhost:3000';
+  const API = '/api';
 
   const PLAN_MULTIPLIERS = [0.0, 0.382, 0.6535, 1.0, 2.0, 3.618, 6.236, 10.382];
   const TIMEFRAMES       = ['daily', 'weekly', 'monthly', 'quarterly', 'half_yearly', 'yearly'] as const;
