@@ -68,13 +68,24 @@ pub async fn update_market(
         }
     };
 
-    // ── 2. Fetch latest levels date ─────────────────────────────────────────
+    // ── 2. Fetch latest levels date across ALL timeframes ───────────────────
     //
-    // We always fetch this so we can detect the "prices current, levels behind"
-    // failure mode — i.e. the calculator crashed on a previous run.
+    // We take MIN(MAX(trade_date) per timeframe) so that if any single
+    // timeframe is behind — daily complete, weekly missing, etc. — we
+    // correctly detect the gap and relaunch the calculator.
+    //
+    // Using MAX(daily) alone would mask missing weekly/monthly data.
 
     let latest_levels_date: Option<NaiveDate> = sqlx::query(
-        r#"SELECT MAX(trade_date) AS latest_date FROM market_levels WHERE timeframe = 'daily'"#,
+        r#"
+        SELECT MIN(last_date) AS latest_date
+        FROM (
+            SELECT timeframe,
+                   MAX(trade_date) AS last_date
+            FROM market_levels
+            GROUP BY timeframe
+        ) t
+        "#,
     )
     .fetch_one(&pool)
     .await
@@ -94,9 +105,8 @@ pub async fn update_market(
 
     // ── 3. Guard: truly nothing to do ──────────────────────────────────────
     //
-    // Only return early if BOTH tables are current.
-    // If levels are behind even when prices are current, fall through to
-    // launch the calculator — a previous run may have crashed.
+    // Only return early if prices AND every timeframe in market_levels
+    // are fully current. A single lagging timeframe keeps us going.
 
     let levels_are_current = latest_levels_date
         .map(|d| d >= latest_prices_date)
@@ -153,8 +163,7 @@ pub async fn update_market(
         );
 
     } else {
-        // Prices are already current — levels are just behind.
-        println!("⚠️  Prices already current but levels are behind — launching calculator catch-up");
+        println!("⚠️  Prices current but levels are behind — launching calculator catch-up");
     }
 
     // ── 5. Guard: refuse concurrent calculator launches ─────────────────────
@@ -187,7 +196,8 @@ pub async fn update_market(
 
     tokio::spawn(async move {
 
-        // Drop guard — resets the flag no matter how the task exits.
+        // Drop guard — resets the flag however the task exits:
+        // success, failure, or panic.
         struct CalculatorGuard;
         impl Drop for CalculatorGuard {
             fn drop(&mut self) {
@@ -203,18 +213,22 @@ pub async fn update_market(
             }
             Ok(status) => {
                 println!(
-                    "❌ Calculator exited with status {:?}",
+                    "❌ Calculator exited with status {:?} — \
+                     levels may be incomplete; next update will retry",
                     status.code()
                 );
             }
             Err(err) => {
                 println!(
-                    "❌ Calculator launch failed (path: {}): {}",
+                    "❌ Calculator launch failed (path: {}): {} — \
+                     next update will retry",
                     calculator_path.display(),
                     err
                 );
             }
         }
+
+        // _guard drops here → CALCULATOR_RUNNING = false
     });
 
     // ── 7. Return immediately ───────────────────────────────────────────────
