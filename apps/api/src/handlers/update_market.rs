@@ -16,9 +16,20 @@ use sqlx::Row;
 
 use tokio::process::Command;
 
-use std::env;
+use std::{
+    env,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use market_core::ingest::ingest_day;
+
+// ── Global calculator lock ────────────────────────────────────────────────────
+//
+// Prevents two calculator processes from running simultaneously and writing
+// to market_levels at the same time. AtomicBool is lock-free and safe to
+// use as a static across Tokio tasks.
+
+static CALCULATOR_RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub async fn update_market(
     State(pool): State<sqlx::Pool<sqlx::Postgres>>,
@@ -115,19 +126,33 @@ pub async fn update_market(
         total_rows
     );
 
-    // ── 4. Fire-and-forget calculator ───────────────────────────────────────
+    // ── 4. Guard: refuse concurrent calculator launches ─────────────────────
     //
-    // We spawn the calculator as a background task and return the HTTP
-    // response immediately. This means:
+    // compare_exchange(current, new, success_ordering, failure_ordering):
+    //   • If the bool is false  → set it to true  → we got the lock → proceed
+    //   • If the bool is true   → leave it alone  → another run is active → reject
     //
-    //   • Cloudflare / proxies / mobile clients never time out waiting
-    //     for a long-running process.
-    //   • The ingestion result is visible in the UI right away.
-    //   • Calculator progress streams to your server logs as normal.
-    //
-    // Trade-off: the response can't report whether the calculator
-    // succeeded — the caller should check server logs or a status
-    // endpoint if that matters.
+    // Ordering::SeqCst is the safest choice here; the calculator only launches
+    // once per update so the performance cost is irrelevant.
+
+    if CALCULATOR_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        println!("⚠️  Calculator already running — skipping launch");
+        return Json(json!({
+            "success": true,
+            "message": "Ingestion complete — calculator already running, skipped second launch",
+            "days_processed": days_processed,
+            "rows":           total_rows,
+            "latest_date":    latest_date.to_string(),
+            "updated_to":     today.to_string(),
+            "ingest_errors":  ingest_errors,
+            "calculator":     "already_running"
+        }));
+    }
+
+    // ── 5. Fire-and-forget calculator ───────────────────────────────────────
 
     let calculator_path = resolve_calculator_path();
 
@@ -137,6 +162,18 @@ pub async fn update_market(
     );
 
     tokio::spawn(async move {
+
+        // Always clear the flag when the task exits, success or failure.
+        // The struct below acts as a scope guard via Drop.
+        struct CalculatorGuard;
+        impl Drop for CalculatorGuard {
+            fn drop(&mut self) {
+                CALCULATOR_RUNNING.store(false, Ordering::SeqCst);
+                println!("🔓 Calculator lock released");
+            }
+        }
+        let _guard = CalculatorGuard;
+
         match Command::new(&calculator_path).status().await {
             Ok(status) if status.success() => {
                 println!("✅ Calculator complete");
@@ -155,9 +192,10 @@ pub async fn update_market(
                 );
             }
         }
+        // _guard drops here → CALCULATOR_RUNNING set back to false
     });
 
-    // ── 5. Return immediately ───────────────────────────────────────────────
+    // ── 6. Return immediately ───────────────────────────────────────────────
 
     Json(json!({
         "success":        true,
@@ -171,7 +209,7 @@ pub async fn update_market(
     }))
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Resolves the path to the calculator binary.
 ///
