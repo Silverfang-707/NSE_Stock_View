@@ -24,10 +24,6 @@ use std::{
 use market_core::ingest::ingest_day;
 
 // ── Global calculator lock ────────────────────────────────────────────────────
-//
-// Prevents two calculator processes from running simultaneously and writing
-// to market_levels at the same time. AtomicBool is lock-free and safe to
-// use as a static across Tokio tasks.
 
 static CALCULATOR_RUNNING: AtomicBool = AtomicBool::new(false);
 
@@ -37,7 +33,7 @@ pub async fn update_market(
 
     println!("🚀 Starting update...");
 
-    // ── 1. Fetch latest date ────────────────────────────────────────────────
+    // ── 1. Fetch latest prices date ─────────────────────────────────────────
 
     let row = sqlx::query(
         r#"SELECT MAX(trade_date) AS latest_date FROM daily_prices"#,
@@ -45,95 +41,123 @@ pub async fn update_market(
     .fetch_one(&pool)
     .await;
 
-    let latest_date: NaiveDate = match row {
+    let latest_prices_date: NaiveDate = match row {
         Ok(row) => match row.try_get("latest_date") {
             Ok(date) => date,
             Err(err) => {
                 return Json(json!({
                     "success": false,
-                    "stage": "db_read",
-                    "error": format!("latest_date column missing or wrong type: {}", err)
+                    "stage":   "db_read",
+                    "error":   format!("latest_date column missing or wrong type: {}", err)
                 }));
             }
         },
         Err(sqlx::Error::RowNotFound) => {
             return Json(json!({
                 "success": false,
-                "stage": "db_read",
-                "error": "daily_prices table is empty — nothing to update from"
+                "stage":   "db_read",
+                "error":   "daily_prices table is empty — nothing to update from"
             }));
         }
         Err(err) => {
             return Json(json!({
                 "success": false,
-                "stage": "db_read",
-                "error": format!("Failed to read latest date: {}", err)
+                "stage":   "db_read",
+                "error":   format!("Failed to read latest prices date: {}", err)
             }));
         }
     };
 
+    // ── 2. Fetch latest levels date ─────────────────────────────────────────
+    //
+    // We always fetch this so we can detect the "prices current, levels behind"
+    // failure mode — i.e. the calculator crashed on a previous run.
+
+    let latest_levels_date: Option<NaiveDate> = sqlx::query(
+        r#"SELECT MAX(trade_date) AS latest_date FROM market_levels WHERE timeframe = 'daily'"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .ok()
+    .and_then(|row| row.try_get("latest_date").ok());
+
     let today = Utc::now().date_naive();
 
-    println!("📅 Latest DB date: {}", latest_date);
-    println!("📅 Today:          {}", today);
+    println!("📅 Latest prices date: {}", latest_prices_date);
+    println!(
+        "📅 Latest levels date: {}",
+        latest_levels_date
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!("📅 Today:              {}", today);
 
-    // ── 2. Guard: nothing to do ─────────────────────────────────────────────
+    // ── 3. Guard: truly nothing to do ──────────────────────────────────────
+    //
+    // Only return early if BOTH tables are current.
+    // If levels are behind even when prices are current, fall through to
+    // launch the calculator — a previous run may have crashed.
 
-    if latest_date >= today {
+    let levels_are_current = latest_levels_date
+        .map(|d| d >= latest_prices_date)
+        .unwrap_or(false);
+
+    if latest_prices_date >= today && levels_are_current {
         println!("✅ Already up to date");
         return Json(json!({
-            "success": true,
-            "message": "Already up to date",
+            "success":        true,
+            "message":        "Already up to date",
             "days_processed": 0,
-            "rows": 0,
-            "latest_date": latest_date.to_string(),
-            "updated_to": today.to_string(),
-            "calculator": "skipped"
+            "rows":           0,
+            "latest_date":    latest_prices_date.to_string(),
+            "updated_to":     today.to_string(),
+            "calculator":     "skipped"
         }));
     }
 
-    // ── 3. Ingest missing days ──────────────────────────────────────────────
+    // ── 4. Ingest missing days (only if prices are behind) ──────────────────
 
-    let mut current = latest_date + Duration::days(1);
     let mut total_rows: i64 = 0;
     let mut days_processed: u32 = 0;
     let mut ingest_errors: Vec<String> = Vec::new();
 
-    while current <= today {
-        let weekday = current.weekday().number_from_monday();
+    if latest_prices_date < today {
 
-        if weekday < 6 {
-            match ingest_day(&pool, current).await {
-                Ok(rows) => {
-                    total_rows += rows as i64;
-                    days_processed += 1;
-                    println!("✅ {} → {} rows", current, rows);
-                }
-                Err(err) => {
-                    let msg = format!("{}: {}", current, err);
-                    println!("❌ {}", msg);
-                    ingest_errors.push(msg);
+        let mut current = latest_prices_date + Duration::days(1);
+
+        while current <= today {
+            let weekday = current.weekday().number_from_monday();
+
+            if weekday < 6 {
+                match ingest_day(&pool, current).await {
+                    Ok(rows) => {
+                        total_rows += rows as i64;
+                        days_processed += 1;
+                        println!("✅ {} → {} rows", current, rows);
+                    }
+                    Err(err) => {
+                        let msg = format!("{}: {}", current, err);
+                        println!("❌ {}", msg);
+                        ingest_errors.push(msg);
+                    }
                 }
             }
+
+            current += Duration::days(1);
         }
 
-        current += Duration::days(1);
+        println!(
+            "✅ Ingestion complete ({} days, {} rows)",
+            days_processed,
+            total_rows
+        );
+
+    } else {
+        // Prices are already current — levels are just behind.
+        println!("⚠️  Prices already current but levels are behind — launching calculator catch-up");
     }
 
-    println!(
-        "✅ Ingestion complete ({} days, {} rows)",
-        days_processed,
-        total_rows
-    );
-
-    // ── 4. Guard: refuse concurrent calculator launches ─────────────────────
-    //
-    // compare_exchange(current, new, success_ordering, failure_ordering):
-    //   • If the bool is false  → set it to true  → we got the lock → proceed
-    //   • If the bool is true   → leave it alone  → another run is active → reject
-    //
-    // Ordering::SeqCst is the safest choice here; the calculator only launches
-    // once per update so the performance cost is irrelevant.
+    // ── 5. Guard: refuse concurrent calculator launches ─────────────────────
 
     if CALCULATOR_RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -141,18 +165,18 @@ pub async fn update_market(
     {
         println!("⚠️  Calculator already running — skipping launch");
         return Json(json!({
-            "success": true,
-            "message": "Ingestion complete — calculator already running, skipped second launch",
+            "success":        true,
+            "message":        "Market data ingested. Calculator already running in background.",
             "days_processed": days_processed,
             "rows":           total_rows,
-            "latest_date":    latest_date.to_string(),
+            "latest_date":    latest_prices_date.to_string(),
             "updated_to":     today.to_string(),
             "ingest_errors":  ingest_errors,
             "calculator":     "already_running"
         }));
     }
 
-    // ── 5. Fire-and-forget calculator ───────────────────────────────────────
+    // ── 6. Fire-and-forget calculator ───────────────────────────────────────
 
     let calculator_path = resolve_calculator_path();
 
@@ -163,8 +187,7 @@ pub async fn update_market(
 
     tokio::spawn(async move {
 
-        // Always clear the flag when the task exits, success or failure.
-        // The struct below acts as a scope guard via Drop.
+        // Drop guard — resets the flag no matter how the task exits.
         struct CalculatorGuard;
         impl Drop for CalculatorGuard {
             fn drop(&mut self) {
@@ -192,17 +215,22 @@ pub async fn update_market(
                 );
             }
         }
-        // _guard drops here → CALCULATOR_RUNNING set back to false
     });
 
-    // ── 6. Return immediately ───────────────────────────────────────────────
+    // ── 7. Return immediately ───────────────────────────────────────────────
+
+    let message = if days_processed > 0 {
+        "Market data ingested. Calculator running in background."
+    } else {
+        "Prices already current. Calculator catching up on missing levels."
+    };
 
     Json(json!({
         "success":        true,
-        "message":        "Update started — calculator running in background",
+        "message":        message,
         "days_processed": days_processed,
         "rows":           total_rows,
-        "latest_date":    latest_date.to_string(),
+        "latest_date":    latest_prices_date.to_string(),
         "updated_to":     today.to_string(),
         "ingest_errors":  ingest_errors,
         "calculator":     "running"
@@ -211,12 +239,6 @@ pub async fn update_market(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Resolves the path to the calculator binary.
-///
-/// Resolution order:
-///   1. `CALCULATOR_BIN` env var      — easiest override in prod / Docker
-///   2. Sibling of the current exe    — correct when both are in target/release/
-///   3. `target/release/calculator`   — fallback for dev / `cargo run`
 fn resolve_calculator_path() -> std::path::PathBuf {
     if let Ok(val) = env::var("CALCULATOR_BIN") {
         return std::path::PathBuf::from(val);
