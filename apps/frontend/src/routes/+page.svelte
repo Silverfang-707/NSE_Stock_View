@@ -38,7 +38,6 @@
     jwd:          number;
     pattern:      string;
     
-    // Legacy support fields
     prev_jgd:     number | null;
     prev_jwd:     number | null;
     prev_bdp:     number | null;
@@ -66,6 +65,7 @@
     jgdRedAbove:   number[];
     jgdRedBelow:   number[];
     legacyContext: string[] | null;
+    stepData:      { top: string[], bot: string[] } | null;
     newBdp:        string;
     newWdp:        string;
     rangeVal:      string;
@@ -87,13 +87,17 @@
   // ============================================================
   // DASHBOARD STATE
   // ============================================================
-  let symbols     = $state<string[]>([]);
-  let series_list = $state<string[]>([]);
-  let selectedSym = $state('');
-  let selectedSer = $state('');
-  let levels      = $state<Level[]>([]);
-  let loading     = $state(false);
-  let error       = $state('');
+  let symbols            = $state<string[]>([]);
+  let series_list        = $state<string[]>([]);
+  let selectedSym        = $state('');
+  let selectedSer        = $state('');
+  let levels             = $state<Level[]>([]);
+  let loading            = $state(false);
+  let error              = $state('');
+
+  // Dropdown Search State
+  let symbolSearch       = $state('');
+  let symbolDropdownOpen = $state(false);
 
   // ============================================================
   // ADMIN STATE
@@ -115,6 +119,12 @@
   // ============================================================
   // DERIVED
   // ============================================================
+  const filteredSymbols = $derived(
+    (symbolSearch === selectedSym || symbolSearch.trim() === '')
+      ? symbols
+      : symbols.filter(s => s.toLowerCase().includes(symbolSearch.toLowerCase()))
+  );
+
   const levelMap = $derived.by(() => {
     const map: Partial<Record<Timeframe, Level>> = {};
     for (const tf of TIMEFRAMES) {
@@ -148,9 +158,37 @@
     return Math.round(v * 100) / 100;
   }
 
+  function computeSteps(values: string[]): { top: string[], bot: string[] } {
+    const top: string[] = [];
+    const bot: string[] = [];
+    const emptySpace = "\u00A0"; // Non-breaking space prevents height collapse
+    
+    let currentIsUp = true; 
+
+    for (let i = 0; i < values.length; i++) {
+      const val = parseFloat(values[i]);
+      
+      if (i > 0) {
+        const prev = parseFloat(values[i - 1]);
+        if (val > prev) currentIsUp = true;
+        else if (val < prev) currentIsUp = false;
+      }
+
+      if (currentIsUp) {
+        top.push(values[i]);
+        bot.push(emptySpace); 
+      } else {
+        top.push(emptySpace);
+        bot.push(values[i]);
+      }
+    }
+    
+    return { top, bot };
+  }
+
   function buildGrid(level: Level): Grid | null {
     if (!level) return null;
-    const { bdp, wdp, range_value: r, buffer_value: buf, jgd, jwd, pattern } = level;
+    const { bdp, wdp, range_value: r, buffer_value: buf, jgd, pattern } = level;
 
     const greenCols  = PLAN_MULTIPLIERS.map(m => round2(bdp + r * m));
     const redCols    = PLAN_MULTIPLIERS.map(m => round2(wdp - r * m));
@@ -159,33 +197,35 @@
     const redAbove   = redCols.map(c => round2(c + buf));
     const redBelow   = redCols.map(c => round2(c - buf));
 
-    const jgdGreenCols  = [0.0, 0.382, 0.6535].map(m => round2(jwd + r * m));
-    const jgdRedCols    = [0.0, 0.382, 0.6535].map(m => round2(jwd - r * m));
+    const jgdGreenCols  = [0.0, 0.382, 0.6535].map(m => round2(jgd + r * m));
+    const jgdRedCols    = [0.0, 0.382, 0.6535].map(m => round2(jgd - r * m));
+    
     const jgdGreenAbove = jgdGreenCols.map(c => round2(c + buf));
     const jgdGreenBelow = jgdGreenCols.map(c => round2(c - buf));
     const jgdRedAbove   = jgdRedCols.map(c => round2(c + buf));
     const jgdRedBelow   = jgdRedCols.map(c => round2(c - buf));
 
-    // =====================================
-    // LEGACY CONTEXT ROUTING (Based on Pattern)
-    // =====================================
     let legacyContext: string[] | null = null;
 
     if (pattern === "3+1") {
-      legacyContext = [level.jgd, level.prev_jgd, level.prev_jwd]
+      legacyContext = [level.prev_jwd, level.prev_jgd, level.jgd]
         .filter((v): v is number => v != null)
-        .sort((a, b) => a - b)
         .map(fmt);
     } 
     else if (pattern === "2+2") {
-      legacyContext = [level.prev_jgd, level.prev_jwd, level.jgd, level.jwd]
+      legacyContext = [level.prev_jwd, level.prev_jgd, level.jwd, level.jgd]
         .filter((v): v is number => v != null)
         .map(fmt);
     } 
     else if (pattern === "2+1") {
-      legacyContext = [level.prev_jgd, level.jgd, level.jwd]
+      legacyContext = [level.prev_jwd, level.prev_jgd, level.jgd]
         .filter((v): v is number => v != null)
         .map(fmt);
+    }
+
+    let stepData = null;
+    if (legacyContext && legacyContext.length > 0) {
+      stepData = computeSteps(legacyContext);
     }
 
     return {
@@ -194,6 +234,7 @@
       jgdGreenCols, jgdGreenAbove, jgdGreenBelow,
       jgdRedCols,   jgdRedAbove,   jgdRedBelow,
       legacyContext,
+      stepData,
       newBdp:   fmt(bdp),
       newWdp:   fmt(wdp),
       rangeVal: fmt(r),
@@ -205,6 +246,15 @@
   // ============================================================
   function authHeaders(): Record<string, string> {
     return { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+  }
+
+  async function authFetch(url: string, options: RequestInit = {}) {
+    const res = await fetch(url, options);
+    if (res.status === 401 || res.status === 403) {
+      doLogout();
+      throw new Error('Unauthorized'); 
+    }
+    return res;
   }
 
   async function doLogin() {
@@ -257,10 +307,11 @@
   async function loadAdminUsers() {
     adminLoading = true;
     try {
-      const res  = await fetch(`${API}/admin/users`, { headers: authHeaders() });
+      const res  = await authFetch(`${API}/admin/users`, { headers: authHeaders() });
       if (!res.ok) throw new Error('Failed to load');
       adminUsers = await res.json() as AdminUser[];
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Unauthorized') return;
       adminUsers = [];
     } finally {
       adminLoading = false;
@@ -272,7 +323,7 @@
     adminSuccess  = '';
     adminCreating = true;
     try {
-      const res  = await fetch(`${API}/admin/create-user`, {
+      const res  = await authFetch(`${API}/admin/create-user`, {
         method:  'POST',
         headers: authHeaders(),
         body:    JSON.stringify({ username: newUsername, password: newPassword, role: newRole }),
@@ -287,7 +338,8 @@
       } else {
         adminError = data.error || 'Failed to create user';
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Unauthorized') return;
       adminError = 'Failed to create user';
     } finally {
       adminCreating = false;
@@ -297,7 +349,7 @@
   async function deleteUser(id: number) {
     if (!confirm('Delete this user?')) return;
     try {
-      const res  = await fetch(`${API}/admin/users/${id}`, {
+      const res  = await authFetch(`${API}/admin/users/${id}`, {
         method:  'DELETE',
         headers: authHeaders(),
       });
@@ -307,7 +359,8 @@
       } else {
         alert(data.error || 'Failed to delete user');
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Unauthorized') return;
       alert('Failed to delete user');
     }
   }
@@ -320,7 +373,7 @@
     updateMessage = "Updating market data...";
 
     try {
-      const response = await fetch(`${API}/admin/update-market`, {
+      const response = await authFetch(`${API}/admin/update-market`, {
         method: "POST",
         headers: authHeaders() 
       });
@@ -335,11 +388,18 @@
       if (result.success) {
         updateSuccess = true;
         updateMessage = `Updated ${result.rows} rows across ${result.days_processed} trading days`;
-        await loadLevels();
+        
+        if (selectedSym) {
+          await loadLevels();
+        }
       } else {
         updateMessage = result.error ?? "Update failed";
       }
     } catch (err) {
+      if (err instanceof Error && err.message === 'Unauthorized') {
+        updateMessage = ''; // Clear message so it doesn't linger on logout
+        return;
+      }
       updateMessage = err instanceof Error && err.message === "Invalid server response" 
         ? "Invalid server response. Check backend logs." 
         : "Server error. Is the backend running?";
@@ -363,28 +423,42 @@
   }
 
   // ============================================================
-  // DASHBOARD API
+  // DASHBOARD API & EVENT HANDLERS
   // ============================================================
   async function loadSymbols() {
     try {
-      const res = await fetch(`${API}/symbols`, { headers: authHeaders() });
+      const res = await authFetch(`${API}/symbols`, { headers: authHeaders() });
       if (!res.ok) throw new Error();
       symbols   = await res.json() as string[];
-      if (symbols.length) selectedSym = symbols[0];
-    } catch {
+      if (symbols.length) {
+        selectSymbol(symbols[0]);
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Unauthorized') return;
       error = 'Failed to load symbols';
     }
+  }
+
+  function selectSymbol(sym: string) {
+    selectedSym = sym;
+    symbolSearch = sym;
+    symbolDropdownOpen = false;
+    loadSeries(); 
   }
 
   async function loadSeries() {
     if (!selectedSym) return;
     try {
-      const res   = await fetch(`${API}/series/${selectedSym}`, { headers: authHeaders() });
+      const res   = await authFetch(`${API}/series/${selectedSym}`, { headers: authHeaders() });
       if (!res.ok) throw new Error();
       series_list = await res.json() as string[];
       selectedSer = series_list.length ? series_list[0] : '';
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Unauthorized') return;
       series_list = [];
+      selectedSer = '';
+    } finally {
+      loadLevels(); 
     }
   }
 
@@ -393,12 +467,17 @@
     loading = true;
     error   = '';
     try {
-      const res = await fetch(`${API}/levels/${selectedSym}`, { headers: authHeaders() });
+      const url = selectedSer 
+        ? `${API}/levels/${selectedSym}?series=${encodeURIComponent(selectedSer)}` 
+        : `${API}/levels/${selectedSym}`;
+
+      const res = await authFetch(url, { headers: authHeaders() });
       if (!res.ok) throw new Error();
-      const all = await res.json() as Level[];
       
+      const all = await res.json() as Level[];
       levels = all; 
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Unauthorized') return;
       error  = 'Failed to load levels';
       levels = [];
     } finally {
@@ -406,16 +485,21 @@
     }
   }
 
-  // ============================================================
-  // EFFECTS
-  // ============================================================
-  $effect(() => {
-    if (selectedSym) {
-      loadSeries();
-      loadLevels();
+  function handleGlobalClick(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (!target.closest('.search-container')) {
+      symbolDropdownOpen = false;
+      if (selectedSym && symbolSearch !== selectedSym) {
+        symbolSearch = selectedSym; 
+      } else if (!selectedSym) {
+        symbolSearch = '';
+      }
     }
-  });
+  }
 
+  // ============================================================
+  // LIFECYCLE
+  // ============================================================
   onMount(async () => {
     const t  = localStorage.getItem('token');
     const r  = localStorage.getItem('role');
@@ -429,6 +513,8 @@
     }
   });
 </script>
+
+<svelte:window onclick={handleGlobalClick} />
 
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -550,14 +636,21 @@
   .topbar-left  { display: flex; align-items: center; gap: 8px; flex: 1; }
   .topbar-right { display: flex; align-items: center; gap: 6px; }
 
-  .topbar select {
+  .topbar select, .search-input {
     padding: 6px 10px;
     font-size: 13px;
     border: none;
     background: white;
     min-width: 150px;
-    cursor: pointer;
+    outline: none;
     font-family: inherit;
+  }
+  
+  .topbar select { cursor: pointer; }
+  .topbar select:disabled { cursor: not-allowed; opacity: 0.6; }
+  
+  .search-input:focus {
+    box-shadow: 0 0 0 2px #3b82f6 inset;
   }
 
   .topbar button {
@@ -589,6 +682,48 @@
   }
 
   .user-badge strong { color: #ddd; font-size: 12px; display: block; }
+
+  /* ── SEARCHABLE COMBOBOX ── */
+  .search-container {
+    position: relative;
+    display: inline-block;
+  }
+
+  .dropdown-list {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 100%;
+    max-height: 250px;
+    overflow-y: auto;
+    background: white;
+    border: 1px solid var(--border);
+    border-top: none;
+    list-style: none;
+    z-index: 100;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  }
+
+  .dropdown-list li {
+    padding: 6px 10px;
+    font-size: 13px;
+    cursor: pointer;
+    color: var(--text);
+  }
+
+  .dropdown-list li:hover, .dropdown-list li:focus {
+    background: #f3f4f6;
+    outline: none;
+  }
+
+  .dropdown-list .no-results {
+    color: var(--text-muted);
+    cursor: default;
+  }
+
+  .dropdown-list .no-results:hover {
+    background: white;
+  }
 
   /* ── SUMMARY TABLE ── */
   .summary-wrap { padding: 14px 20px 0; display: flex; justify-content: center; }
@@ -658,13 +793,19 @@
 
   .jgd-side { display: flex; flex-direction: column; align-items: center; min-width: 240px; }
 
+  .side-label-container {
+    height: 20px;
+    width: 100%;
+    display: flex;
+    justify-content: flex-end;
+  }
+
   .side-label {
     font-size: 12px;
     font-weight: 400;
     color: var(--text);
-    margin-bottom: 5px;
-    align-self: flex-end;
     padding-right: 4px;
+    margin-bottom: 2px;
   }
 
   .grid-3col { display: flex; flex-direction: column; gap: 4px; align-items: center; }
@@ -697,17 +838,42 @@
   .new-row .label { min-width: 70px; text-align: center; color: var(--text); font-weight: 500; }
   .new-row .rval  { min-width: 44px; text-align: left; font-weight: 500; }
 
-  .context-hints { 
-    display: flex; 
-    gap: 14px; 
-    margin: 10px 0; 
-    justify-content: center; 
-    flex-wrap: wrap; 
-    max-width: 180px; 
-    line-height: 1.6;
+  /* ── MID ZONES & TREND VISUALIZATION ── */
+  .mid-zone {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    margin: 10px 0;
+    flex: 1; /* Ensures vertical gaps match between left and right columns */
   }
-  .context-hints span { font-size: 13px; color: var(--hint-red); font-weight: 500; }
-  .context-hints.monthly-hint span { color: var(--hint-blue); }
+
+  .step-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    align-items: center;
+  }
+
+  .step-row {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+  }
+
+  .step-hint {
+    font-size: 13px;
+    color: var(--hint-red);
+    font-weight: 500;
+    min-width: 48px; 
+    text-align: center;
+  }
+
+  .monthly-hint .step-hint {
+    color: var(--hint-blue);
+  }
 
   .bdp-side  { display: flex; flex-direction: column; align-items: flex-start; flex: 1; max-width: 800px; }
   .grid-8col { display: flex; flex-direction: column; gap: 4px; width: 100%; }
@@ -727,8 +893,6 @@
   .cell-8.plain { color: var(--text); }
   .cell-8.green { background: var(--green-bg); color: white; font-weight: 600; }
   .cell-8.red   { background: var(--red-bg);   color: white; font-weight: 600; }
-
-  .zone-sep { height: 60px; display: flex; align-items: center; justify-content: center; width: 100%; }
 
   /* ── ADMIN ── */
   .admin-wrap { padding: 16px 20px; display: flex; flex-direction: column; gap: 20px; }
@@ -896,17 +1060,43 @@
   <div class="topbar">
     <div class="topbar-left">
       {#if view === 'dashboard'}
-        <select bind:value={selectedSym}>
-          {#each symbols as sym}
-            <option value={sym}>{sym}</option>
-          {/each}
-        </select>
+        
+        <div class="search-container">
+          <input 
+            class="search-input"
+            type="text" 
+            bind:value={symbolSearch} 
+            onfocus={(e) => { 
+              (e.target as HTMLInputElement).select(); 
+              symbolDropdownOpen = true; 
+            }}
+            placeholder="Search symbol..."
+          />
+          {#if symbolDropdownOpen}
+            <ul class="dropdown-list">
+              {#each filteredSymbols as sym}
+                <li 
+                  tabindex="0" 
+                  onclick={() => selectSymbol(sym)}
+                  onkeydown={(e) => e.key === 'Enter' && selectSymbol(sym)}
+                >{sym}</li>
+              {:else}
+                <li class="no-results">No symbols found</li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
 
-        <select bind:value={selectedSer}>
-          {#each series_list as ser}
-            <option value={ser}>{ser}</option>
-          {/each}
+        <select bind:value={selectedSer} onchange={loadLevels} disabled={series_list.length === 0}>
+          {#if series_list.length === 0}
+            <option value="" disabled>No series available</option>
+          {:else}
+            {#each series_list as ser}
+              <option value={ser}>{ser}</option>
+            {/each}
+          {/if}
         </select>
+        
       {:else}
         <span style="color:#aaa; font-size:13px;">Admin Panel</span>
       {/if}
@@ -978,7 +1168,7 @@
             <div class="plan-body">
 
               <div class="jgd-side">
-                <div class="side-label">WDP</div>
+                <div class="side-label-container"><div class="side-label">WDP</div></div>
                 <div class="grid-3col">
                   <div class="row-3">
                     {#each g.jgdGreenAbove as v}<div class="cell plain">{fmt(v)}</div>{/each}
@@ -991,15 +1181,17 @@
                   </div>
                 </div>
 
-                <div class="new-row">
-                  <span class="lval">{fmt(level.jgd)}</span>
-                  <span class="label">NEW BDP</span>
-                  <span class="rval">{g.newBdp}</span>
-                </div>
-                <div class="new-row">
-                  <span class="lval">{g.rangeVal}</span>
-                  <span class="label">NEW WDP</span>
-                  <span class="rval">{g.newWdp}</span>
+                <div class="mid-zone jgd-mid">
+                  <div class="new-row">
+                    <span class="lval">{fmt(level.jgd)}</span>
+                    <span class="label">NEW BDP</span>
+                    <span class="rval">{g.newBdp}</span>
+                  </div>
+                  <div class="new-row">
+                    <span class="lval">{g.rangeVal}</span>
+                    <span class="label">NEW WDP</span>
+                    <span class="rval">{g.newWdp}</span>
+                  </div>
                 </div>
 
                 <div class="grid-3col">
@@ -1013,10 +1205,11 @@
                     {#each g.jgdRedBelow as v}<div class="cell plain">{fmt(v)}</div>{/each}
                   </div>
                 </div>
-                <div class="side-label" style="align-self:center; margin-top:10px;">WDP</div>
+                <div class="side-label-container"><div class="side-label">WDP</div></div>
               </div>
 
               <div class="bdp-side">
+                <div class="side-label-container"></div>
                 <div class="grid-8col">
                   <div class="row-8">
                     {#each g.greenAbove as v}<div class="cell-8 plain">{fmt(v)}</div>{/each}
@@ -1027,15 +1220,26 @@
                   <div class="row-8">
                     {#each g.greenBelow as v}<div class="cell-8 plain">{fmt(v)}</div>{/each}
                   </div>
+                </div>
 
-                  <div class="zone-sep">
-                    {#if g.legacyContext}
-                      <div class="context-hints {tf === 'monthly' ? 'monthly-hint' : ''}">
-                        {#each g.legacyContext as v}<span>{v}</span>{/each}
+                <div class="mid-zone bdp-mid">
+                  {#if g.stepData}
+                    <div class="step-container {tf === 'monthly' ? 'monthly-hint' : ''}">
+                      <div class="step-row">
+                        {#each g.stepData.top as val}
+                          <span class="step-hint">{val}</span>
+                        {/each}
                       </div>
-                    {/if}
-                  </div>
+                      <div class="step-row">
+                        {#each g.stepData.bot as val}
+                          <span class="step-hint">{val}</span>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+                </div>
 
+                <div class="grid-8col">
                   <div class="row-8">
                     {#each g.redAbove as v}<div class="cell-8 plain">{fmt(v)}</div>{/each}
                   </div>
@@ -1046,6 +1250,7 @@
                     {#each g.redBelow as v}<div class="cell-8 plain">{fmt(v)}</div>{/each}
                   </div>
                 </div>
+                <div class="side-label-container"></div>
               </div>
 
             </div>
@@ -1136,19 +1341,18 @@
   </div>
   {/if}
 
-</div>
-
-{#if updating}
-<div class="update-overlay">
-  <div class="update-modal">
-    <div class="update-spinner"></div>
-    <div class="progress-bar">
-      <div class="progress-fill"></div>
+  {#if updating}
+  <div class="update-overlay">
+    <div class="update-modal">
+      <div class="update-spinner"></div>
+      <div class="progress-bar">
+        <div class="progress-fill"></div>
+      </div>
+      <p>Downloading market data and recalculating levels...</p>
+      <small>Please do not close this page. This may take several minutes.</small>
     </div>
-    <p>Downloading market data and recalculating levels...</p>
-    <small>Please do not close this page. This may take several minutes.</small>
   </div>
-</div>
-{/if}
+  {/if}
 
+</div>
 {/if}
