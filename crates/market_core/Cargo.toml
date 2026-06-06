@@ -11,3 +11,5 @@ zip = "4"
 csv = "1"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono"] }
 anyhow = "1"
+bytes = "1.11.1"
+tokio = { version = "1", features = ["full"] }

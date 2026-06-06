@@ -1,8 +1,13 @@
 use anyhow::Result;
 use dotenvy::dotenv;
 
+use futures::stream::{self, StreamExt};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
 use std::env;
 use std::io::Cursor;
+use std::time::Duration;
 
 use clap::Parser;
 use csv::Reader;
@@ -10,10 +15,10 @@ use zip::ZipArchive;
 
 use db::create_pool;
 
-use sqlx::{query, Row};
+use sqlx::{query, Postgres, QueryBuilder, Row};
 
 use chrono::Datelike;
-use chrono::{Duration, NaiveDate, Utc};
+use chrono::{NaiveDate, Utc};
 
 use serde::Deserialize;
 
@@ -91,46 +96,62 @@ struct OldCandle {
 }
 
 // =====================================
-// INSERT ROW
+// UNIFIED DATABASE STRUCT
 // =====================================
-
-async fn insert_candle(
-    pool: &sqlx::Pool<sqlx::Postgres>,
-    symbol: &str,
-    series: &str,
+#[derive(Debug)]
+struct DbCandle {
+    symbol: String,
+    series: String,
     trade_date: NaiveDate,
     open_price: f64,
     high_price: f64,
     low_price: f64,
     close_price: f64,
     volume: i64,
+}
+
+// =====================================
+// BULK INSERT
+// =====================================
+
+async fn insert_candles_bulk(
+    pool: &sqlx::Pool<Postgres>,
+    candles: &[DbCandle],
 ) -> Result<()> {
-    query(
-        r#"
-        INSERT INTO daily_prices (
-            symbol,
-            series,
-            trade_date,
-            open_price,
-            high_price,
-            low_price,
-            close_price,
-            volume
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT DO NOTHING
-        "#
-    )
-    .bind(symbol)
-    .bind(series)
-    .bind(trade_date)
-    .bind(open_price)
-    .bind(high_price)
-    .bind(low_price)
-    .bind(close_price)
-    .bind(volume)
-    .execute(pool)
-    .await?;
+    if candles.is_empty() {
+        return Ok(());
+    }
+
+    // Postgres parameter limit is 65535.
+    // 3000 items * 8 fields = 24,000 parameters, which is well within safe limits.
+    for chunk in candles.chunks(3000) {
+        let mut query_builder: QueryBuilder<Postgres> = QueryBuilder::new(
+            "INSERT INTO daily_prices (
+                symbol, series, trade_date, open_price, 
+                high_price, low_price, close_price, volume
+            ) "
+        );
+
+        query_builder.push_values(chunk, |mut b, candle| {
+            b.push_bind(&candle.symbol)
+             .push_bind(&candle.series)
+             .push_bind(candle.trade_date)
+             .push_bind(candle.open_price)
+             .push_bind(candle.high_price)
+             .push_bind(candle.low_price)
+             .push_bind(candle.close_price)
+             .push_bind(candle.volume);
+        });
+
+        query_builder.push(
+            r#"
+            ON CONFLICT DO NOTHING
+            "#
+        );
+
+        let query = query_builder.build();
+        query.execute(pool).await?;
+    }
 
     Ok(())
 }
@@ -182,9 +203,13 @@ async fn ingest_day(
 
     println!("🌐 Status: {}", response.status());
 
-    if !response.status().is_success() {
-        println!("⚠️ Skipping {} (holiday/no data)", date_str);
+    // 404 Not Found or 403 Forbidden usually indicates a genuine holiday on NSE archives
+    if response.status() == reqwest::StatusCode::NOT_FOUND || response.status() == reqwest::StatusCode::FORBIDDEN {
+        println!("⚠️ Skipping {} (holiday/missing file)", date_str);
         return Ok(0);
+    } else if !response.status().is_success() {
+        // Bail out on actual server failures or explicit rate limits (429/500)
+        anyhow::bail!("NSE Server rejected request with status: {}", response.status());
     }
 
     let bytes = response.bytes().await?;
@@ -193,53 +218,64 @@ async fn ingest_day(
     let file = archive.by_index(0)?;
     let mut csv_reader = Reader::from_reader(file);
 
-    let mut inserted = 0;
+    let mut candles_to_insert = Vec::new();
 
     if is_new_format {
-
         for result in csv_reader.deserialize::<NewCandle>() {
-            let c = result?;
+            let c = match result {
+                Ok(candle) => candle,
+                Err(e) => {
+                    println!("⚠️ Skipping malformed row: {}", e);
+                    continue;
+                }
+            };
 
-            insert_candle(
-                pool,
-                &c.symbol,
-                &c.series,
-                c.trade_date,
-                c.open_price,
-                c.high_price,
-                c.low_price,
-                c.close_price,
-                c.volume,
-            ).await?;
-
-            inserted += 1;
+            candles_to_insert.push(DbCandle {
+                symbol: c.symbol,
+                series: c.series,
+                trade_date: c.trade_date,
+                open_price: c.open_price,
+                high_price: c.high_price,
+                low_price: c.low_price,
+                close_price: c.close_price,
+                volume: c.volume,
+            });
         }
-
     } else {
-
         for result in csv_reader.deserialize::<OldCandle>() {
-            let c = result?;
+            let c = match result {
+                Ok(candle) => candle,
+                Err(e) => {
+                    println!("⚠️ Skipping malformed row: {}", e);
+                    continue;
+                }
+            };
 
-            // old format date: "25-JUN-2021"
-            let trade_date = NaiveDate::parse_from_str(
-                c.trade_date.trim(),
-                "%d-%b-%Y"
-            )?;
+            // Parse the old format date safely
+            let trade_date = match NaiveDate::parse_from_str(c.trade_date.trim(), "%d-%b-%Y") {
+                Ok(d) => d,
+                Err(e) => {
+                    println!("⚠️ Skipping row due to bad date format {}: {}", c.trade_date, e);
+                    continue;
+                }
+            };
 
-            insert_candle(
-                pool,
-                &c.symbol,
-                &c.series,
+            candles_to_insert.push(DbCandle {
+                symbol: c.symbol,
+                series: c.series,
                 trade_date,
-                c.open_price,
-                c.high_price,
-                c.low_price,
-                c.close_price,
-                c.volume,
-            ).await?;
-
-            inserted += 1;
+                open_price: c.open_price,
+                high_price: c.high_price,
+                low_price: c.low_price,
+                close_price: c.close_price,
+                volume: c.volume,
+            });
         }
+    }
+
+    let inserted = candles_to_insert.len();
+    if inserted > 0 {
+        insert_candles_bulk(pool, &candles_to_insert).await?;
     }
 
     println!("✅ Inserted {} rows for {}", inserted, date_str);
@@ -300,66 +336,83 @@ async fn sync_instruments(
 // MAIN
 // =====================================
 
+// =====================================
+// MAIN (PARALLELIZED)
+// =====================================
+
 #[tokio::main]
 async fn main() -> Result<()> {
 
     let args = Args::parse();
-
     dotenv().ok();
 
     let database_url = env::var("DATABASE_URL")?;
-
     let pool = create_pool(&database_url).await;
 
     println!("✅ Database Connected");
 
-    let client = reqwest::Client::builder().build()?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
 
-    // avoid partial current-day archives
-    let today = Utc::now().date_naive() - Duration::days(1);
-
+    let today = Utc::now().date_naive() - chrono::Duration::days(1);
     let latest_date = get_latest_trade_date(&pool).await?;
-
-    // =====================================
-    // START DATE LOGIC
-    // =====================================
 
     let start_date = if let Some(years) = args.bootstrap {
         println!("🚀 Bootstrap mode: {} years", years);
-        today - Duration::days(years * 365)
+        today - chrono::Duration::days(years * 365)
     } else {
         match latest_date {
             Some(date) => {
                 println!("📅 Latest DB date: {}", date);
-                date + Duration::days(1)
+                date + chrono::Duration::days(1)
             }
             None => {
                 println!("⚠️ Empty DB detected, defaulting to last 30 days");
-                today - Duration::days(30)
+                today - chrono::Duration::days(30)
             }
         }
     };
 
     println!("🚀 Starting sync from {}", start_date);
 
+    // 1. Build a list of valid weekdays to fetch
+    let mut dates_to_fetch = Vec::new();
     let mut current_date = start_date;
-    let mut total_inserted = 0;
 
     while current_date <= today {
-
-        if current_date.weekday().number_from_monday() >= 6 {
-            println!("⏭️ Skipping weekend {}", current_date);
-            current_date += Duration::days(1);
-            continue;
+        if current_date.weekday().number_from_monday() < 6 {
+            dates_to_fetch.push(current_date);
         }
-
-        match ingest_day(&pool, &client, current_date).await {
-            Ok(inserted) => total_inserted += inserted,
-            Err(err) => println!("❌ Failed {}: {}", current_date, err),
-        }
-
-        current_date += Duration::days(1);
+        current_date += chrono::Duration::days(1);
     }
+
+    println!("📅 Total trading days to evaluate: {}", dates_to_fetch.len());
+
+    // 2. Set up thread-safe counter
+    let total_inserted = Arc::new(AtomicUsize::new(0));
+
+    // 3. Process the dates concurrently
+    // ⚠️ CRITICAL: Do not set this concurrency limit higher than 3-5 for NSE!
+    let concurrency_limit = 4; 
+
+    stream::iter(dates_to_fetch)
+        .for_each_concurrent(concurrency_limit, |date| {
+            // Clone references for the async block
+            let pool = pool.clone(); // sqlx pools are cheap to clone (they are Arcs under the hood)
+            let client = client.clone();
+            let total = Arc::clone(&total_inserted);
+
+            async move {
+                match ingest_day(&pool, &client, date).await {
+                    Ok(inserted) => {
+                        total.fetch_add(inserted, Ordering::Relaxed);
+                    }
+                    Err(err) => println!("❌ Failed {}: {}", date, err),
+                }
+            }
+        })
+        .await;
 
     // =====================================
     // SYNC INSTRUMENTS
@@ -368,7 +421,7 @@ async fn main() -> Result<()> {
     sync_instruments(&pool).await?;
 
     println!("\n🎉 Sync Complete");
-    println!("📦 Total Rows Inserted: {}", total_inserted);
+    println!("📦 Total Rows Inserted: {}", total_inserted.load(Ordering::Relaxed));
 
     Ok(())
 }
